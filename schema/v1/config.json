@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rkingon.github.io/ecsd/schema/v1/config.json",
+  "properties": {
+    "app": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "The app's name: the manifest and release parameters default to /\u003capp\u003e/\u003cstage\u003e/deploy and /\u003capp\u003e/\u003cstage\u003e/release."
+    },
+    "images": {
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "properties": {
+              "image": {
+                "type": "string"
+              },
+              "container": {
+                "type": "string",
+                "description": "Defaults to the task definition's first container."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "image"
+            ]
+          }
+        ]
+      },
+      "type": "object",
+      "description": "Image per service or task name, or * for all. Variables: ${registry} ${name} ${sha} ${app} ${stage}."
+    },
+    "skip_unless_changed": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "description": "Gitignore-style patterns over the files changed since the released commit; a deploy with no matching change does nothing. !pattern excludes."
+    },
+    "before_roll": {
+      "items": {
+        "properties": {
+          "drain": {
+            "properties": {
+              "started_by": {
+                "type": "string"
+              },
+              "timeout": {
+                "type": "string",
+                "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+                "description": "Default 30m."
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "started_by"
+            ],
+            "description": "Wait until no task started by started_by is running: work a restart would lose."
+          },
+          "exec": {
+            "type": "string",
+            "description": "A shell command; non-zero stops the deploy."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "type": "array",
+      "description": "Gates run after registering and before the release command and rollout, in order."
+    },
+    "release": {
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "A service or task name from the manifest; its new revision runs."
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Overrides the container's command."
+        },
+        "container": {
+          "type": "string",
+          "description": "Defaults to the image's container."
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "description": "How long it may run before it's stopped. Default 30m."
+        },
+        "wait": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "description": "How long to wait for another deploy's release task to finish. Default 30m."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "description": "A one-off task run before the rollout, one at a time per cluster: migrations."
+    },
+    "health": {
+      "items": {
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Dot path into the JSON body (.revision, .build.sha) that must equal the deployed commit; a prefix of 7 or more characters matches."
+          },
+          "expect": {
+            "type": "integer",
+            "description": "Status. Default 200."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url"
+        ]
+      },
+      "type": "array",
+      "description": "Endpoints that must answer, and report the deployed commit, once every service has rolled."
+    },
+    "smoke": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "description": "Default GET."
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "description": "Values may use ${env.NAME}."
+          },
+          "body": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "integer",
+            "description": "Status. Default 200."
+          },
+          "contains": {
+            "type": "string",
+            "description": "Text the body must contain."
+          },
+          "attempts": {
+            "type": "integer",
+            "description": "Default 10."
+          },
+          "interval": {
+            "type": "string",
+            "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+            "description": "Between attempts. Default 6s."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url"
+        ]
+      },
+      "type": "array",
+      "description": "Requests that must get the expected answer before a deploy is recorded as a release."
+    },
+    "on_failure": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "rollback"
+      ],
+      "description": "rollback: a failed rollout, health check or smoke test returns the services to the current release.",
+      "default": "stop"
+    },
+    "console": {
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Default [sh]."
+        },
+        "container": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "task"
+      ],
+      "description": "The one-off task ecsd console starts."
+    },
+    "verify_image": {
+      "type": "string",
+      "description": "A shell command run for every image before it's deployed or rolled back to, with ECSD_IMAGE set. Non-zero stops the deploy."
+    },
+    "timeouts": {
+      "properties": {
+        "roll": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+          "description": "Per service, until its deployment completes and its old tasks are gone. Default 20m."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "app",
+    "images"
+  ],
+  "title": "ecsd.yml",
+  "description": "What ecsd deploys: images, gates, the release task, health and smoke checks."
+}

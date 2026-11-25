@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rkingon.github.io/ecsd/schema/v1/manifest.json",
+  "properties": {
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name or ARN."
+    },
+    "region": {
+      "type": "string",
+      "description": "Checked against the credentials' region when set."
+    },
+    "registry": {
+      "type": "string",
+      "description": "Fills ${registry} in ecsd.yml's images."
+    },
+    "launch_type": {
+      "type": "string",
+      "enum": [
+        "FARGATE",
+        "EC2",
+        "EXTERNAL"
+      ],
+      "description": "For one-off tasks (release, run, console). Default FARGATE; ignored when capacity_provider_strategy is set."
+    },
+    "capacity_provider_strategy": {
+      "items": {
+        "properties": {
+          "capacity_provider": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "integer"
+          },
+          "base": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capacity_provider"
+        ]
+      },
+      "type": "array"
+    },
+    "services": {
+      "additionalProperties": {
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "Task definition ARN (or family:revision) every deploy copies, changing only the image."
+          },
+          "service": {
+            "type": "string",
+            "description": "Services only: the ECS service's name, when it isn't the key."
+          },
+          "network": {
+            "properties": {
+              "subnets": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "security_groups": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "assign_public_ip": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "subnets"
+            ],
+            "description": "Tasks only: overrides the manifest's network."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "template"
+        ]
+      },
+      "type": "object",
+      "description": "Services ecsd rolls, by name. Each must exist, and ignore task definition changes in whatever manages it."
+    },
+    "tasks": {
+      "additionalProperties": {
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "Task definition ARN (or family:revision) every deploy copies, changing only the image."
+          },
+          "service": {
+            "type": "string",
+            "description": "Services only: the ECS service's name, when it isn't the key."
+          },
+          "network": {
+            "properties": {
+              "subnets": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "security_groups": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "assign_public_ip": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "subnets"
+            ],
+            "description": "Tasks only: overrides the manifest's network."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "template"
+        ]
+      },
+      "type": "object",
+      "description": "Task families ecsd registers on every deploy without a service: one-off tasks, consoles, tasks an app starts itself."
+    },
+    "network": {
+      "properties": {
+        "subnets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "security_groups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "assign_public_ip": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "subnets"
+      ],
+      "description": "For one-off tasks. Defaults to the first service's."
+    },
+    "hosts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object",
+      "description": "Base URLs, as ${hosts.\u003cname\u003e} in health and smoke checks."
+    },
+    "release_parameter": {
+      "type": "string",
+      "description": "Where releases are recorded. Default /\u003capp\u003e/\u003cstage\u003e/release."
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "cluster",
+    "services"
+  ],
+  "title": "ecsd stage manifest",
+  "description": "Where ecsd deploys, written by the infrastructure to an SSM parameter (default /\u003capp\u003e/\u003cstage\u003e/deploy)."
+}

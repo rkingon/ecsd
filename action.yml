@@ -1,0 +1,91 @@
+name: ecsd
+description: Deploy to ECS with ecsd, the release matching this action's ref, checksum- and provenance-verified.
+branding:
+  icon: upload-cloud
+  color: orange
+
+inputs:
+  stage:
+    description: Stage to act on.
+    required: true
+  command:
+    description: "ecsd command: deploy, rollback, plan, superseded, status…"
+    default: deploy
+  args:
+    description: More arguments, as one line (--image web=…@sha256:…, --to v12, --force).
+    default: ""
+  config:
+    description: Path to ecsd.yml.
+    default: ecsd.yml
+  version:
+    description: Release to use (v1.2.3). Default the tag this action is pinned to, found from its commit when pinned by SHA.
+    default: ""
+  verify-provenance:
+    description: Check the binary's build provenance attestation with gh attestation verify.
+    default: "true"
+  token:
+    description: Token for looking up releases and attestations.
+    default: ${{ github.token }}
+
+outputs:
+  skipped:
+    description: true when there was nothing to deploy (superseded, unchanged, already released).
+    value: ${{ steps.run.outputs.skipped }}
+  sha:
+    description: The commit deployed.
+    value: ${{ steps.run.outputs.sha }}
+  version:
+    description: The release version recorded.
+    value: ${{ steps.run.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install ecsd
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.action_repository }}
+        REF: ${{ github.action_ref }}
+        VERSION: ${{ inputs.version }}
+        VERIFY: ${{ inputs.verify-provenance }}
+      run: |
+        set -euo pipefail
+        repo=${REPO:-rkingon/ecsd}
+        version=$VERSION
+        if [ -z "$version" ]; then
+          if [[ "$REF" == v* ]]; then
+            version=$REF
+          else
+            # Pinned by commit: the release tag on that commit.
+            version=$(gh api "repos/$repo/tags" --paginate --jq ".[] | select(.commit.sha == \"$REF\") | .name" | grep '^v' | head -1 || true)
+          fi
+        fi
+        [ -n "$version" ] || { echo "::error::no ecsd release for ref $REF: set the action's version input"; exit 1; }
+        case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "::error::unsupported $(uname -m)"; exit 1 ;; esac
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        archive="ecsd_${version#v}_${os}_${arch}.tar.gz"
+        dir="$RUNNER_TEMP/ecsd-$version"
+        mkdir -p "$dir"
+        gh release download "$version" --repo "$repo" --dir "$dir" --clobber --pattern "$archive" --pattern checksums.txt
+        (cd "$dir" && grep " $archive\$" checksums.txt | shasum -a 256 -c -)
+        if [ "$VERIFY" = true ]; then
+          gh attestation verify "$dir/$archive" --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" >/dev/null
+          echo "provenance verified: $archive"
+        fi
+        tar -xzf "$dir/$archive" -C "$dir" ecsd
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - id: run
+      name: ecsd ${{ inputs.command }}
+      shell: bash
+      env:
+        ECSD_STAGE: ${{ inputs.stage }}
+        ECSD_CONFIG: ${{ inputs.config }}
+        COMMAND: ${{ inputs.command }}
+        ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        # ARGS is split on whitespace and never evaluated, so an input can't run commands.
+        read -r -a extra <<< "$ARGS"
+        ecsd "$COMMAND" "${extra[@]}"
