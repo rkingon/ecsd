@@ -21,3 +21,6 @@ checksum:
 changelog:
   use: github
   sort: asc
+
+release:
+  prerelease: auto # v0.1.0-alpha.1 and the like are marked pre-release
