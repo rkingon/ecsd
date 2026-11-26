@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/spf13/cobra"
 
@@ -82,6 +83,11 @@ func validateLive(ctx context.Context, a *app) error {
 			}
 		} else {
 			errs = append(errs, fmt.Errorf("images: nothing for %s, and no *", name))
+		}
+		if r := a.cfg.Release; r != nil && r.Task == name {
+			if w := releaseWontStop(def.TaskDefinition, releaseContainer(a.cfg, r)); w != "" {
+				a.ui.Warnf("release: %s", w)
+			}
 		}
 		if !isService {
 			continue
@@ -291,4 +297,33 @@ func checkCmd(a *app) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// releaseContainer is the container whose exit code decides the release step, "" for the first.
+func releaseContainer(cfg *config.File, r *config.Release) string {
+	if r.Container != "" {
+		return r.Container
+	}
+	if img, ok := cfg.ImageFor(r.Task); ok && len(img.Containers) > 0 {
+		return img.Containers[0]
+	}
+	return ""
+}
+
+// releaseWontStop explains why a release task would outlive its command, if it would. ECS stops a task when an
+// essential container exits; a non-essential one exiting leaves the rest running, as with an init container the server
+// depends on, and the release step waits until release.timeout.
+func releaseWontStop(td *types.TaskDefinition, container string) string {
+	cd, err := ecsx.Container(td, container)
+	if err != nil || cd.Essential == nil || *cd.Essential {
+		return ""
+	}
+	var rest []string
+	for _, other := range td.ContainerDefinitions {
+		if other.Essential == nil || *other.Essential {
+			rest = append(rest, aws.ToString(other.Name))
+		}
+	}
+	return fmt.Sprintf("container %s of %s isn't essential, so the task keeps running after it exits (%s) and the release step times out: give the release a task family of its own, or make %s essential",
+		aws.ToString(cd.Name), aws.ToString(td.Family), strings.Join(rest, ", "), aws.ToString(cd.Name))
 }

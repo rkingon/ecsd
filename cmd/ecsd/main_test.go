@@ -214,3 +214,16 @@ func TestShellJoin(t *testing.T) {
 type samePinner struct{}
 
 func (samePinner) Pin(_ context.Context, image string, _ bool) (string, error) { return image, nil }
+
+func TestReleaseWontStop(t *testing.T) {
+	td := &types.TaskDefinition{Family: aws.String("api"), ContainerDefinitions: []types.ContainerDefinition{
+		{Name: aws.String("migrate"), Essential: aws.Bool(false)},
+		{Name: aws.String("api")},
+	}}
+	if w := releaseWontStop(td, "migrate"); !strings.Contains(w, "migrate of api isn't essential") || !strings.Contains(w, "(api)") {
+		t.Errorf("init container as the release container: %q", w)
+	}
+	if w := releaseWontStop(td, "api"); w != "" {
+		t.Errorf("essential release container: %q", w)
+	}
+}
