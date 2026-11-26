@@ -130,6 +130,7 @@ The action downloads the release that matches the commit it's pinned to. Before 
 | `status` | each service's revision and rollout, the current release, tasks that failed in the last hour |
 | `run <name> -- cmd` | a one-off task from the released revision; exits with its exit code |
 | `run --release [-- cmd]` | `release.command` (or `cmd`) from the released revision, taking the release lock a deploy's release task takes |
+| `run … --from-template` | either of the above from the manifest's template instead of the released revision: one-off tasks before a stage's first deploy |
 | `console` | your own one-off task with a shell in it, stopped when you leave (`--keep`, `--stop`) |
 | `exec <service> -- cmd` | a command in a running task |
 | `tunnel <service> [host:]port` | a local port forwarded into a task, or through it to a database |

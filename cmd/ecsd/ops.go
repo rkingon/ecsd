@@ -32,9 +32,22 @@ func (a *app) released(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	if cur == nil || cur.Revisions[name] == "" {
-		return "", fmt.Errorf("%s has no released revision on %s yet", name, a.stage)
+		return "", fmt.Errorf("%s has no released revision on %s yet (--from-template runs the manifest's template)", name, a.stage)
 	}
 	return cur.Revisions[name], nil
+}
+
+// revision is what a one-off task of name runs: its released revision, or with fromTemplate the manifest's template,
+// for tasks before a stage's first deploy. Explicit, so a mistyped stage can't quietly run template code.
+func (a *app) revision(ctx context.Context, name string, fromTemplate bool) (string, error) {
+	if !fromTemplate {
+		return a.released(ctx, name)
+	}
+	fam, _, ok := a.manifest.Family(name)
+	if !ok {
+		return "", fmt.Errorf("%s isn't a service or task in the manifest", name)
+	}
+	return fam.Template, nil
 }
 
 // oneOffNetwork mirrors deploy's: the task's own, the manifest's, or the first service's.
@@ -68,7 +81,7 @@ func (a *app) container(ctx context.Context, revision, name string) (*types.Cont
 
 func runCmd(a *app) *cobra.Command {
 	var container string
-	var detach, asRelease bool
+	var detach, asRelease, fromTemplate bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "run <name> [-- command...] | run --release [-- command...]",
@@ -88,13 +101,13 @@ func runCmd(a *app) *cobra.Command {
 				if detach || cmd.Flags().Changed("timeout") {
 					return errors.New("--release waits for its task and uses release.timeout: drop --detach and --timeout")
 				}
-				return a.runRelease(ctx, container, args)
+				return a.runRelease(ctx, container, args, fromTemplate)
 			}
 			if err := a.load(ctx); err != nil {
 				return err
 			}
 			name, command := args[0], args[1:]
-			rev, err := a.released(ctx, name)
+			rev, err := a.revision(ctx, name, fromTemplate)
 			if err != nil {
 				return err
 			}
@@ -146,11 +159,12 @@ func runCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "container whose command is overridden (default the first)")
 	cmd.Flags().BoolVar(&detach, "detach", false, "print the task ARN and return without waiting")
 	cmd.Flags().DurationVar(&timeout, "timeout", time.Hour, "stop the task after this long")
+	cmd.Flags().BoolVar(&fromTemplate, "from-template", false, "run the manifest's template instead of the released revision: before the first deploy")
 	cmd.Flags().BoolVar(&asRelease, "release", false, "run release.task's command (or the one given) as a deploy's release step does: one at a time per app, waiting for any other")
 	return cmd
 }
 
-func (a *app) runRelease(ctx context.Context, container string, command []string) error {
+func (a *app) runRelease(ctx context.Context, container string, command []string, fromTemplate bool) error {
 	if err := a.load(ctx); err != nil {
 		return err
 	}
@@ -169,7 +183,7 @@ func (a *app) runRelease(ctx context.Context, container string, command []string
 			container = img.Container
 		}
 	}
-	rev, err := a.released(ctx, r.Task)
+	rev, err := a.revision(ctx, r.Task, fromTemplate)
 	if err != nil {
 		return err
 	}

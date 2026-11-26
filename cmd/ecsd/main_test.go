@@ -132,6 +132,13 @@ func TestCLI(t *testing.T) {
 	t.Setenv("GITHUB_SHA", "")
 
 	s.must("check")
+	if _, err := s.run("run", "--release"); err == nil || !strings.Contains(err.Error(), "--from-template") {
+		t.Errorf("run --release before any release: %v", err)
+	}
+	s.must("run", "--release", "--from-template")
+	if tasks := s.ecs.TasksStartedBy(deploy.ReleaseStartedBy("shop")); len(tasks) != 1 || s.ecs.Image(aws.ToString(tasks[0].TaskDefinitionArn)) != "placeholder" {
+		t.Errorf("run --release --from-template ran %+v", tasks)
+	}
 	s.must("deploy", "--sha", one)
 	if out := s.must("plan"); !strings.Contains(out, "reg.example/shop-web:"+two) || !strings.Contains(out, "release task: web [migrate]") {
 		t.Errorf("plan:\n%s", out)
