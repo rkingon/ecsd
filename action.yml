@@ -68,7 +68,9 @@ runs:
         dir="$RUNNER_TEMP/ecsd-$version"
         mkdir -p "$dir"
         gh release download "$version" --repo "$repo" --dir "$dir" --clobber --pattern "$archive" --pattern checksums.txt
-        (cd "$dir" && grep " $archive\$" checksums.txt | shasum -a 256 -c -)
+        # sha256sum is coreutils (Linux); shasum is Perl's, on macOS but not every Linux runner.
+        if command -v sha256sum >/dev/null; then sum=(sha256sum -c -); else sum=(shasum -a 256 -c -); fi
+        (cd "$dir" && grep " $archive\$" checksums.txt | "${sum[@]}")
         if [ "$VERIFY" = true ]; then
           # Built from the commit this action is pinned to (or the tag it names), by this repository's release workflow,
           # on GitHub's runners: a moved tag or a replaced release fails here.
