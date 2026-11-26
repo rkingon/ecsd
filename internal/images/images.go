@@ -4,6 +4,7 @@ package images
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/aws/smithy-go"
 )
 
 // Ref is a parsed image reference.
@@ -87,6 +89,10 @@ func (r *Resolver) Pin(ctx context.Context, image string, allowTags bool) (strin
 	out, err := r.Client(region).DescribeImages(ctx, &ecr.DescribeImagesInput{
 		RegistryId: aws.String(account), RepositoryName: aws.String(ref.Repo), ImageIds: []types.ImageIdentifier{{ImageTag: aws.String(tag)}},
 	})
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDeniedException" {
+		return "", fmt.Errorf("image %s: %w (ecsd iam-policy grants ecr:DescribeImages only on the repositories ecsd.yml names: pass a digest, or widen the role)", image, err)
+	}
 	if err != nil {
 		return "", fmt.Errorf("image %s: %w", image, err)
 	}

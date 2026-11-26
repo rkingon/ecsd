@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
+	"github.com/aws/smithy-go"
 )
 
 const digest = "sha256:" + "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
@@ -19,6 +20,9 @@ type fakeECR struct {
 
 func (f *fakeECR) DescribeImages(_ context.Context, in *ecr.DescribeImagesInput, _ ...func(*ecr.Options)) (*ecr.DescribeImagesOutput, error) {
 	f.calls++
+	if aws.ToString(in.RepositoryName) == "other/repo" {
+		return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized"}
+	}
 	if aws.ToString(in.RepositoryName) != "shop/api" || aws.ToString(in.ImageIds[0].ImageTag) != "abc" || aws.ToString(in.RegistryId) != "123456789012" {
 		return &ecr.DescribeImagesOutput{}, nil
 	}
@@ -40,6 +44,9 @@ func TestPin(t *testing.T) {
 	}
 	if _, err := r.Pin(ctx, host+"/shop/api:missing", false); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("Pin(missing tag) err = %v", err)
+	}
+	if _, err := r.Pin(ctx, host+"/other/repo:abc", false); err == nil || !strings.Contains(err.Error(), "pass a digest") {
+		t.Errorf("Pin(denied repo) err = %v", err)
 	}
 	if got, err := r.Pin(ctx, "ghcr.io/o/app:1.2@"+digest, false); err != nil || got != "ghcr.io/o/app@"+digest {
 		t.Errorf("Pin(digest) = %q, %v", got, err)
