@@ -60,7 +60,7 @@ func TestRegisterKeepsTemplateAndTags(t *testing.T) {
 	f := testutil.NewECS()
 	tmpl := f.AddTemplate("api", "placeholder", "app", "sidecar")
 	c := &Client{API: f, Cluster: "c", UI: ui.Discard()}
-	r, err := c.Register(context.Background(), tmpl, "sidecar", "sidecar:2", map[string]string{"ecsd:sha": "abc"})
+	r, err := c.Register(context.Background(), tmpl, []string{"sidecar"}, "sidecar:2", map[string]string{"ecsd:sha": "abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestRegisterKeepsTemplateAndTags(t *testing.T) {
 	if tags := f.Tags(r.ARN); tags["ecsd:sha"] != "abc" || tags["team"] != "shop" {
 		t.Errorf("tags = %v", tags)
 	}
-	if _, err := c.Register(context.Background(), tmpl, "nope", "x", nil); err == nil {
+	if _, err := c.Register(context.Background(), tmpl, []string{"nope"}, "x", nil); err == nil {
 		t.Error("registered with a container the template lacks")
 	}
 }

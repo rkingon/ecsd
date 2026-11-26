@@ -604,3 +604,48 @@ func TestRollbackImagesOnly(t *testing.T) {
 		t.Errorf("api runs %s from %s, want c1's image in the current template %s", img, from, tmpl)
 	}
 }
+
+func TestRollbackWhileDeployingStopsTheDeploy(t *testing.T) {
+	w := newWorld(t, configYAML)
+	first := w.mustDeploy(c1)
+	w.env.ECS.API = &hookECS{API: w.ecs, onRun: func() {
+		_ = w.env.Store.Record(context.Background(), &release.Release{SHA: c1, Kind: release.Rollback, From: c1, Revisions: first.Revisions})
+	}}
+	if _, err := w.deploy(c2); err == nil || !strings.Contains(err.Error(), "while this deploy waited") {
+		t.Fatalf("deploy of %s over a rollback to its ancestor: %v", c2[:7], err)
+	}
+}
+
+func TestRerunAfterRollbackKeepsItsConfig(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	w.mustDeploy(c2)
+	w.env.Manifest.Services["api"] = manifest.Family{Template: w.ecs.AddTemplate("shop-api", "placeholder")}
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := w.deploy(c1); err != nil || !strings.Contains(res.Skipped, "already released") {
+		t.Errorf("rerun of the rolled-back-to %s = %+v, %v", c1[:7], res, err)
+	}
+}
+
+func TestImageForSeveralContainers(t *testing.T) {
+	star := `  "*": ${registry}/shop-${name}:${sha}` + "\n"
+	w := newWorld(t, strings.Replace(configYAML, star, star+`  api: { image: "${registry}/shop-api:${sha}", container: [migrate, api] }`+"\n", 1))
+	tmpl := w.ecs.AddTemplate("shop-api", "placeholder", "migrate", "api", "proxy")
+	w.env.Manifest.Services["api"] = manifest.Family{Template: tmpl}
+	rel := w.mustDeploy(c1)
+	def, err := w.env.ECS.Describe(context.Background(), rel.Revisions["api"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"migrate": "reg.example/shop-api:" + c1, "api": "reg.example/shop-api:" + c1, "proxy": "placeholder"}
+	for _, cd := range def.TaskDefinition.ContainerDefinitions {
+		if got := aws.ToString(cd.Image); got != want[aws.ToString(cd.Name)] {
+			t.Errorf("%s runs %s, want %s", aws.ToString(cd.Name), got, want[aws.ToString(cd.Name)])
+		}
+	}
+	if res, err := w.deploy(c1); err != nil || res.Skipped == "" {
+		t.Errorf("rerun = %+v, %v", res, err)
+	}
+}

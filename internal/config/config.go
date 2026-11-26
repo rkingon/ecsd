@@ -29,10 +29,21 @@ type File struct {
 	Timeouts          Timeouts         `yaml:"timeouts,omitempty" json:"timeouts,omitempty"`
 }
 
-// Image is a string (the reference) or an object naming the container that gets it.
+// Image is a string (the reference) or an object naming the containers that get it.
 type Image struct {
-	Ref       string `yaml:"image" json:"image"`
-	Container string `yaml:"container,omitempty" json:"container,omitempty"`
+	Ref        string     `yaml:"image" json:"image"`
+	Containers Containers `yaml:"container,omitempty" json:"container,omitempty"`
+}
+
+// Containers is a container name, or a list of them.
+type Containers []string
+
+func (c *Containers) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*c = Containers{n.Value}
+		return nil
+	}
+	return n.Decode((*[]string)(c))
 }
 
 func (i *Image) UnmarshalYAML(n *yaml.Node) error {
@@ -47,12 +58,20 @@ func (i *Image) UnmarshalYAML(n *yaml.Node) error {
 func (Image) JSONSchema() *jsonschema.Schema {
 	props := jsonschema.NewProperties()
 	props.Set("image", &jsonschema.Schema{Type: "string"})
-	props.Set("container", &jsonschema.Schema{Type: "string", Description: "Defaults to the task definition's first container."})
+	props.Set("container", &jsonschema.Schema{
+		Description: "The container, or containers, that get the image. Defaults to the task definition's first.",
+		OneOf: []*jsonschema.Schema{
+			{Type: "string"},
+			{Type: "array", Items: &jsonschema.Schema{Type: "string"}, MinItems: ptr(uint64(1))},
+		},
+	})
 	return &jsonschema.Schema{OneOf: []*jsonschema.Schema{
 		{Type: "string"},
 		{Type: "object", Properties: props, Required: []string{"image"}, AdditionalProperties: jsonschema.FalseSchema},
 	}}
 }
+
+func ptr[T any](v T) *T { return &v }
 
 // Gate is exactly one of drain or exec.
 type Gate struct {
@@ -168,6 +187,11 @@ func (f *File) Validate() error {
 	for name, img := range f.Images {
 		if img.Ref == "" {
 			errs = append(errs, fmt.Errorf("images.%s: empty", name))
+		}
+		for _, c := range img.Containers {
+			if c == "" {
+				errs = append(errs, fmt.Errorf("images.%s.container: an empty name", name))
+			}
 		}
 	}
 	if f.VerifyImage == "" {

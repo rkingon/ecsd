@@ -54,7 +54,7 @@ func (e *Env) Rollback(ctx context.Context, opts RollbackOptions) (*release.Rele
 			return nil, fmt.Errorf("release version %d has nothing for %s, which the manifest now has", target.Version, name)
 		}
 	}
-	plan, from := &Plan{Holds: map[string]string{}}, target.Revisions
+	plan, from := &Plan{}, target.Revisions
 	if opts.ImagesOnly {
 		plan, from = &Plan{Images: target.Images, Holds: e.holds()}, nil
 	}

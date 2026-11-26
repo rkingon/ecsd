@@ -179,8 +179,8 @@ func (a *app) runRelease(ctx context.Context, container string, command []string
 		container = r.Container
 	}
 	if container == "" {
-		if img, ok := a.cfg.ImageFor(r.Task); ok {
-			container = img.Container
+		if img, ok := a.cfg.ImageFor(r.Task); ok && len(img.Containers) > 0 {
+			container = img.Containers[0]
 		}
 	}
 	rev, err := a.revision(ctx, r.Task, fromTemplate)

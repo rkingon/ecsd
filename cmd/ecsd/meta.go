@@ -71,8 +71,14 @@ func validateLive(ctx context.Context, a *app) error {
 			continue
 		}
 		if img, ok := a.cfg.ImageFor(name); ok {
-			if _, err := ecsx.Container(def.TaskDefinition, img.Container); err != nil {
-				errs = append(errs, fmt.Errorf("images.%s: %w", name, err))
+			containers := img.Containers
+			if len(containers) == 0 {
+				containers = []string{""}
+			}
+			for _, c := range containers {
+				if _, err := ecsx.Container(def.TaskDefinition, c); err != nil {
+					errs = append(errs, fmt.Errorf("images.%s: %w", name, err))
+				}
 			}
 		} else {
 			errs = append(errs, fmt.Errorf("images: nothing for %s, and no *", name))

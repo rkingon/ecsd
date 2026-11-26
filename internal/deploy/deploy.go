@@ -78,9 +78,9 @@ type Options struct {
 type Plan struct {
 	SHA     string
 	Current *release.Release
-	Skip    string            // why there's nothing to do; empty to deploy
-	Images  map[string]string // name → image
-	Holds   map[string]string // name → the container that gets it, empty for the first
+	Skip    string              // why there's nothing to do; empty to deploy
+	Images  map[string]string   // name → image
+	Holds   map[string][]string // name → the containers that get it, none for the first
 }
 
 // Plan decides what a deploy of opts.SHA would do, without changing anything.
@@ -108,11 +108,11 @@ func (e *Env) Plan(ctx context.Context, opts Options) (*Plan, error) {
 	return p, nil
 }
 
-func (e *Env) holds() map[string]string {
-	h := map[string]string{}
+func (e *Env) holds() map[string][]string {
+	h := map[string][]string{}
 	for _, name := range e.Manifest.Names() {
 		if i, ok := e.Config.ImageFor(name); ok {
-			h[name] = i.Container
+			h[name] = i.Containers
 		}
 	}
 	return h
@@ -159,8 +159,11 @@ func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (strin
 		return "", nil
 	}
 	if cur.SHA == sha {
-		if changed, err := e.changedTemplates(ctx, cur); err != nil || len(changed) > 0 {
-			return "", err
+		// A rollback chose its release's config too: a rerun of its commit mustn't put the current templates back.
+		if cur.Kind != release.Rollback {
+			if changed, err := e.changedTemplates(ctx, cur); err != nil || len(changed) > 0 {
+				return "", err
+			}
 		}
 		return fmt.Sprintf("%s is already released (version %d)", short(sha), cur.Version), nil
 	}
@@ -329,8 +332,8 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	return &Result{Release: rel}, nil
 }
 
-// overtaken returns the current release if another deploy or rollback recorded one since was that opts.SHA doesn't
-// include. Plan's supersede check alone can't stop an older commit from going out over a newer one.
+// overtaken returns the current release if one was recorded since was that this deploy mustn't go out over: a rollback,
+// or a deploy of a commit opts.SHA doesn't include. Plan's supersede check alone can't stop either.
 func (e *Env) overtaken(ctx context.Context, opts Options, was *release.Release) (*release.Release, error) {
 	if opts.Force {
 		return nil, nil
@@ -338,6 +341,10 @@ func (e *Env) overtaken(ctx context.Context, opts Options, was *release.Release)
 	now, err := e.Store.Current(ctx)
 	if err != nil || now == nil || (was != nil && now.Version == was.Version) || now.SHA == opts.SHA {
 		return nil, err
+	}
+	// A rollback is someone saying "not that": it stops a deploy whatever the deploy's commit includes.
+	if now.Kind == release.Rollback {
+		return now, nil
 	}
 	if e.Git != nil && e.Git.Has(now.SHA) {
 		if older, err := e.Git.IsAncestor(now.SHA, opts.SHA); err != nil || older {
@@ -385,7 +392,7 @@ func (e *Env) failed(ctx context.Context, err error, cur *release.Release, regs 
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
-	if _, rerr := e.register(rctx, restorable, &Plan{Holds: map[string]string{}}, cur.SHA, cur.Revisions); rerr != nil {
+	if _, rerr := e.register(rctx, restorable, &Plan{}, cur.SHA, cur.Revisions); rerr != nil {
 		return fmt.Errorf("%w; and putting the released revisions back on top failed: %v", err, rerr)
 	}
 	return err

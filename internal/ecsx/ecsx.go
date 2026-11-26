@@ -89,30 +89,40 @@ func Container(td *types.TaskDefinition, name string) (*types.ContainerDefinitio
 
 type Registered struct {
 	ARN       string
-	Container string // the container that got the image
+	Container string // the first container that got the image
 	Reused    bool
 }
 
-// Register copies template as a new revision of its family, changing only container's image (none when image is
-// empty) and adding tags. Never the family's latest revision: that may be an older deploy's. When the latest already
+// Register copies template as a new revision of its family, changing only the image of containers (the first when
+// none are named; nothing when image is empty) and adding tags. Never the family's latest revision: that may be an older deploy's. When the latest already
 // is this copy (same template, image and tags), as on a rerun, it's reused rather than registered again, so services
 // already on it aren't restarted.
-func (c *Client) Register(ctx context.Context, template, container, image string, tags map[string]string) (Registered, error) {
+func (c *Client) Register(ctx context.Context, template string, containers []string, image string, tags map[string]string) (Registered, error) {
 	def, err := c.Describe(ctx, template)
 	if err != nil {
 		return Registered{}, err
 	}
 	td := def.TaskDefinition
-	cd, err := Container(td, container)
-	if err != nil {
-		return Registered{}, err
+	if len(containers) == 0 {
+		containers = []string{""}
 	}
-	if image != "" {
-		cd.Image = aws.String(image)
+	var reg Registered
+	images := map[string]string{}
+	for _, name := range containers {
+		cd, err := Container(td, name)
+		if err != nil {
+			return Registered{}, err
+		}
+		if image != "" {
+			cd.Image = aws.String(image)
+		}
+		if reg.Container == "" {
+			reg.Container = aws.ToString(cd.Name)
+		}
+		images[aws.ToString(cd.Name)] = aws.ToString(cd.Image)
 	}
-	reg := Registered{Container: aws.ToString(cd.Name)}
 
-	if latest, err := c.Describe(ctx, aws.ToString(td.Family)); err == nil && sameCopy(latest, reg.Container, aws.ToString(cd.Image), tags) {
+	if latest, err := c.Describe(ctx, aws.ToString(td.Family)); err == nil && sameCopy(latest, images, tags) {
 		reg.ARN, reg.Reused = aws.ToString(latest.TaskDefinitionArn), true
 		return reg, nil
 	}
@@ -144,7 +154,7 @@ func (c *Client) Register(ctx context.Context, template, container, image string
 	return reg, nil
 }
 
-func sameCopy(latest *Definition, container, image string, tags map[string]string) bool {
+func sameCopy(latest *Definition, images, tags map[string]string) bool {
 	have := map[string]string{}
 	for _, t := range latest.Tags {
 		have[aws.ToString(t.Key)] = aws.ToString(t.Value)
@@ -154,8 +164,12 @@ func sameCopy(latest *Definition, container, image string, tags map[string]strin
 			return false
 		}
 	}
-	cd, err := Container(latest.TaskDefinition, container)
-	return err == nil && aws.ToString(cd.Image) == image
+	for name, image := range images {
+		if cd, err := Container(latest.TaskDefinition, name); err != nil || aws.ToString(cd.Image) != image {
+			return false
+		}
+	}
+	return true
 }
 
 func mergeTags(have []types.Tag, add map[string]string) []types.Tag {

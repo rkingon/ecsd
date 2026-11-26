@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ app: shop
 images:
   "*": ${registry}/shop-${name}:${sha}
   worker: { image: "${registry}/shop-worker:${sha}", container: worker }
+  api: { image: "${registry}/shop-api:${sha}", container: [migrate, api] }
 skip_unless_changed: ["**", "!infra/**", "!**/*.md"]
 before_roll:
   - drain: { started_by: scheduler, timeout: 100m }
@@ -31,7 +33,7 @@ func TestParseFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Images["worker"].Container != "worker" || f.Images["*"].Ref != "${registry}/shop-${name}:${sha}" {
+	if !slices.Equal(f.Images["worker"].Containers, []string{"worker"}) || !slices.Equal(f.Images["api"].Containers, []string{"migrate", "api"}) || f.Images["*"].Ref != "${registry}/shop-${name}:${sha}" {
 		t.Errorf("images: %+v", f.Images)
 	}
 	if f.BeforeRoll[0].Drain.Timeout.Duration != 100*time.Minute {
@@ -40,8 +42,8 @@ func TestParseFull(t *testing.T) {
 	if f.Timeouts.Roll.Or(time.Minute) != 25*time.Minute {
 		t.Errorf("roll timeout: %v", f.Timeouts.Roll)
 	}
-	if img, ok := f.ImageFor("api"); !ok || img.Ref != f.Images["*"].Ref {
-		t.Errorf("ImageFor(api) = %+v", img)
+	if img, ok := f.ImageFor("web"); !ok || img.Ref != f.Images["*"].Ref {
+		t.Errorf("ImageFor(web) = %+v", img)
 	}
 }
 

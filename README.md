@@ -6,7 +6,7 @@ Deploys to Amazon ECS that end with proof the new revision is what serves, and a
 ecsd deploy --stage prod
 ```
 
-1. **Supersede check.** It skips the deploy if the commit is already released or behind the released one, so a slow CI run can't put an older commit over a newer one. It refuses a commit the stage was rolled back from, unless `--force`. With `skip_unless_changed`, it also skips when nothing that goes into the image changed. A changed template is never skipped: if the manifest names a template the released revisions weren't copied from, the deploy runs, even for an already-released commit.
+1. **Supersede check.** It skips the deploy if the commit is already released or behind the released one, so a slow CI run can't put an older commit over a newer one. It refuses a commit the stage was rolled back from, unless `--force`. With `skip_unless_changed`, it also skips when nothing that goes into the image changed. A changed template is never skipped: if the manifest names a template the released revisions weren't copied from, the deploy runs, even for an already-released commit. The exception is a commit the stage was rolled back to: the rollback chose its config, so a rerun is skipped.
 2. **Pin and verify images.** Every image must come from the manifest's registry, and is pinned to its digest (ECR tags are resolved), so the release record and any rollback to it mean the same bytes. `verify_image` runs for each one, such as a check of its provenance attestation.
 3. **Register.** Each service gets a new revision copied from the template your infrastructure owns, with only the image changed. It never copies the family's latest revision, which may be an older deploy's. A rerun reuses the revisions it already registered.
 4. **Gates.** `before_roll` drains running jobs and runs your checks.
@@ -14,7 +14,7 @@ ecsd deploy --stage prod
 6. **Roll.** Every service rolls in parallel, and each rollout is followed by its deployment ID until it completes and the old tasks are gone. A circuit-breaker rollback counts as a failure. `aws ecs wait services-stable` reports it as success, because the service is stable, just on the old revision.
 7. **Health.** Each endpoint must report the deployed commit three times in a row, so an old task still behind the load balancer can't pass the check.
 8. **Smoke.** Requests that must get the expected status and body.
-9. **Record.** Before the roll and again before recording, ecsd re-reads the current release. If another deploy has released a commit this one doesn't include, it stops; if that happened mid-roll, it returns the services to that release. Task families get their new revisions only now, once every check has passed. The release (commit, pinned images, revisions) is written to an SSM parameter whose versions form the history. With `on_failure: rollback`, a failure in steps 6–8 returns the services to the current release.
+9. **Record.** Before the roll and again before recording, ecsd re-reads the current release. If a rollback, or a deploy of a commit this one doesn't include, was recorded meanwhile, it stops; if that happened mid-roll, it returns the services to that release. Task families get their new revisions only now, once every check has passed. The release (commit, pinned images, revisions) is written to an SSM parameter whose versions form the history. With `on_failure: rollback`, a failure in steps 6–8 returns the services to the current release.
 
 Outside a deploy, the newest revision of every family is the current release's, so an app that starts tasks by family name runs released code. A deploy that fails at any step puts a copy of the released revision back on top of each family it registered.
 
@@ -43,6 +43,7 @@ app: shop
 images:
   "*": ${registry}/shop-${name}:${sha}           # every service and task, by name
   worker: { image: "${registry}/shop-worker:${sha}", container: worker }
+  web: { image: "${registry}/shop-web:${sha}", container: [assets, web] }  # containers sharing one image
 
 release:                                         # before the rollout, one at a time per app
   task: api
