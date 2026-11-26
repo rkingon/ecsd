@@ -92,4 +92,5 @@ runs:
         set -euo pipefail
         # ARGS is split on whitespace and never evaluated, so an input can't run commands.
         read -r -a extra <<< "$ARGS"
-        ecsd "$COMMAND" "${extra[@]}"
+        # bash 3.2 (macOS) treats an empty array as unset under set -u.
+        ecsd "$COMMAND" ${extra[@]+"${extra[@]}"}

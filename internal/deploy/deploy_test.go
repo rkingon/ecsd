@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,5 +501,106 @@ func TestStaleRerunOfRolledBackCommitSkips(t *testing.T) {
 	res, err := w.deploy(c2)
 	if err != nil || !strings.Contains(res.Skipped, "superseded") {
 		t.Errorf("stale rerun of the rolled-back %s = %+v, %v; want a quiet superseded skip", c2[:7], res, err)
+	}
+}
+
+func TestTemplateChangeShipsWithoutNewCode(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	tmpl := w.ecs.AddTemplate("shop-api", "placeholder")
+	w.env.Manifest.Services["api"] = manifest.Family{Template: tmpl}
+
+	rel := w.mustDeploy(c1)
+	if got := w.ecs.Tags(rel.Revisions["api"])["ecsd:template"]; got != tmpl {
+		t.Errorf("api's revision was copied from %s, want the new template %s", got, tmpl)
+	}
+	if res, err := w.deploy(c1); err != nil || !strings.Contains(res.Skipped, "already released") {
+		t.Errorf("rerun after shipping the template = %+v, %v", res, err)
+	}
+
+	// Copies keep the template they came from, so a rollback isn't mistaken for a template change.
+	w.mustDeploy(c2)
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := w.deploy(c1); err != nil || !strings.Contains(res.Skipped, "already released") {
+		t.Errorf("deploy of the rolled-back-to commit = %+v, %v", res, err)
+	}
+
+	w = newWorld(t, configYAML+"skip_unless_changed: [\"src/**\"]\n")
+	w.env.Git = fakeGit{order: []string{c1, c2, c3}, changed: map[string][]string{c1 + ".." + c2: {"README.md"}}}
+	w.mustDeploy(c1)
+	if res, err := w.deploy(c2); err != nil || res.Skipped == "" {
+		t.Fatalf("unchanged deploy = %+v, %v", res, err)
+	}
+	w.env.Manifest.Services["api"] = manifest.Family{Template: w.ecs.AddTemplate("shop-api", "placeholder")}
+	w.mustDeploy(c2)
+}
+
+type updateHook struct {
+	ecsx.API
+	once   sync.Once
+	before func()
+}
+
+func (h *updateHook) UpdateService(ctx context.Context, in *ecs.UpdateServiceInput, opts ...func(*ecs.Options)) (*ecs.UpdateServiceOutput, error) {
+	h.once.Do(h.before)
+	return h.API.UpdateService(ctx, in, opts...)
+}
+
+func TestNewerReleaseWhileWaitingStopsTheRoll(t *testing.T) {
+	w := newWorld(t, configYAML)
+	first := w.mustDeploy(c1)
+	w.env.ECS.API = &hookECS{API: w.ecs, onRun: func() {
+		_ = w.env.Store.Record(context.Background(), &release.Release{SHA: c3, Kind: release.Deploy, Revisions: first.Revisions})
+	}}
+	if _, err := w.deploy(c2); err == nil || !strings.Contains(err.Error(), "while this deploy waited") {
+		t.Fatalf("deploy overtaken before its roll: %v", err)
+	}
+	if got := w.ecs.Image(w.ecs.Revision("api")); strings.HasSuffix(got, c2) {
+		t.Errorf("api rolled to %s over a newer release", got)
+	}
+}
+
+func TestNewerReleaseDuringRollIsRestored(t *testing.T) {
+	w := newWorld(t, configYAML)
+	first := w.mustDeploy(c1)
+	w.env.ECS.API = &updateHook{API: w.ecs, before: func() {
+		_ = w.env.Store.Record(context.Background(), &release.Release{SHA: c3, Kind: release.Deploy, Revisions: first.Revisions})
+	}}
+	if _, err := w.deploy(c2); err == nil || !strings.Contains(err.Error(), "while this deploy rolled out") {
+		t.Fatalf("deploy overtaken during its roll: %v", err)
+	}
+	if cur, _ := w.env.Store.Current(context.Background()); cur.SHA != c3 {
+		t.Errorf("current release = %s, want the newer %s", cur.SHA[:7], c3[:7])
+	}
+	for _, svc := range []string{"api", "web"} {
+		if got := w.ecs.Revision(svc); got != first.Revisions[svc] {
+			t.Errorf("%s runs %s, want the newer release's %s", svc, got, first.Revisions[svc])
+		}
+	}
+}
+
+func TestOlderReleaseWhileWaitingIsFine(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.env.ECS.API = &hookECS{API: w.ecs, onRun: func() {
+		_ = w.env.Store.Record(context.Background(), &release.Release{SHA: c1, Kind: release.Deploy})
+	}}
+	w.mustDeploy(c2)
+}
+
+func TestRollbackImagesOnly(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	tmpl := w.ecs.AddTemplate("shop-api", "placeholder")
+	w.env.Manifest.Services["api"] = manifest.Family{Template: tmpl}
+	w.mustDeploy(c2)
+	rel, err := w.env.Rollback(context.Background(), RollbackOptions{ImagesOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev := w.ecs.Revision("api")
+	if img, from := w.ecs.Image(rev), w.ecs.Tags(rev)["ecsd:template"]; img != "reg.example/shop-api:"+c1 || from != tmpl || rel.Revisions["api"] != rev {
+		t.Errorf("api runs %s from %s, want c1's image in the current template %s", img, from, tmpl)
 	}
 }

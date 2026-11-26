@@ -165,6 +165,7 @@ func rollbackCmd(a *app) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.To, "to", "", "a released commit (7+ characters) or release version (v12)")
 	cmd.Flags().BoolVar(&opts.SkipGates, "skip-gates", false, "don't run before_roll")
+	cmd.Flags().BoolVar(&opts.ImagesOnly, "images-only", false, "the release's images in the current templates, not its revisions' whole config")
 	return cmd
 }
 

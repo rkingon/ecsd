@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/rkingon/ecsd/internal/config"
@@ -88,7 +89,7 @@ func (e *Env) Plan(ctx context.Context, opts Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Plan{SHA: opts.SHA, Current: cur, Images: map[string]string{}, Holds: map[string]string{}}
+	p := &Plan{SHA: opts.SHA, Current: cur, Images: map[string]string{}, Holds: e.holds()}
 	for _, name := range e.Manifest.Names() {
 		img, err := e.image(name, opts)
 		if err != nil {
@@ -98,9 +99,6 @@ func (e *Env) Plan(ctx context.Context, opts Options) (*Plan, error) {
 			return nil, err
 		}
 		p.Images[name] = img
-		if i, ok := e.Config.ImageFor(name); ok {
-			p.Holds[name] = i.Container
-		}
 	}
 	if !opts.Force {
 		if p.Skip, err = e.skip(ctx, cur, opts.SHA); err != nil {
@@ -108,6 +106,16 @@ func (e *Env) Plan(ctx context.Context, opts Options) (*Plan, error) {
 		}
 	}
 	return p, nil
+}
+
+func (e *Env) holds() map[string]string {
+	h := map[string]string{}
+	for _, name := range e.Manifest.Names() {
+		if i, ok := e.Config.ImageFor(name); ok {
+			h[name] = i.Container
+		}
+	}
+	return h
 }
 
 // inRegistry enforces that images come from the manifest's registry, unless image_policy.any_registry.
@@ -151,6 +159,9 @@ func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (strin
 		return "", nil
 	}
 	if cur.SHA == sha {
+		if changed, err := e.changedTemplates(ctx, cur); err != nil || len(changed) > 0 {
+			return "", err
+		}
 		return fmt.Sprintf("%s is already released (version %d)", short(sha), cur.Version), nil
 	}
 	if e.Git == nil {
@@ -180,10 +191,45 @@ func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (strin
 			return "", err
 		}
 		if _, ok := gitx.AnyMatches(changed, e.Config.SkipUnlessChanged); !ok {
+			if changed, err := e.changedTemplates(ctx, cur); err != nil || len(changed) > 0 {
+				return "", err
+			}
 			return fmt.Sprintf("nothing skip_unless_changed covers changed since %s", short(cur.SHA)), nil
 		}
 	}
 	return "", nil
+}
+
+// changedTemplates names the families whose manifest template isn't the one their released revision was copied from:
+// an IaC change, which the next deploy ships even when the commit is released or unchanged.
+func (e *Env) changedTemplates(ctx context.Context, cur *release.Release) ([]string, error) {
+	var changed []string
+	for _, name := range e.Manifest.Names() {
+		fam, _, _ := e.Manifest.Family(name)
+		if rev := cur.Revisions[name]; rev != "" {
+			def, err := e.ECS.Describe(ctx, rev)
+			if err != nil {
+				return nil, err
+			}
+			if tagValue(def.Tags, "ecsd:template") == fam.Template {
+				continue
+			}
+		}
+		changed = append(changed, name)
+	}
+	if len(changed) > 0 {
+		e.UI.Printf("templates changed since %s was released: %s", short(cur.SHA), strings.Join(changed, ", "))
+	}
+	return changed, nil
+}
+
+func tagValue(tags []types.Tag, key string) string {
+	for _, t := range tags {
+		if aws.ToString(t.Key) == key {
+			return aws.ToString(t.Value)
+		}
+	}
+	return ""
 }
 
 type Result struct {
@@ -237,6 +283,12 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	if now, err := e.overtaken(ctx, opts, p.Current); err != nil {
+		return nil, e.failed(ctx, err, p.Current, regs)
+	} else if now != nil {
+		return nil, e.failed(ctx, fmt.Errorf("%s was released while this deploy waited: not rolling %s over it", short(now.SHA), short(opts.SHA)), now, regs)
+	}
+
 	err = e.rollAndCheck(ctx, arns(regs), opts.SHA)
 	if err == nil {
 		var late map[string]ecsx.Registered
@@ -256,6 +308,16 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 		return nil, e.failed(ctx, err, p.Current, regs)
 	}
 
+	if now, err := e.overtaken(ctx, opts, p.Current); err != nil {
+		return nil, e.failed(ctx, err, p.Current, regs)
+	} else if now != nil {
+		err := fmt.Errorf("%s was released while this deploy rolled out", short(now.SHA))
+		if rerr := e.restore(ctx, now); rerr != nil {
+			err = fmt.Errorf("%w; and returning to it failed: %v", err, rerr)
+		}
+		return nil, e.failed(ctx, err, now, regs)
+	}
+
 	rel := &release.Release{
 		SHA: opts.SHA, Kind: release.Deploy, Revisions: arns(regs), Images: p.Images, At: time.Now().UTC(), By: e.Actor,
 	}
@@ -265,6 +327,24 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	e.UI.Output("version", fmt.Sprint(rel.Version))
 	e.summarize("Deployed", rel)
 	return &Result{Release: rel}, nil
+}
+
+// overtaken returns the current release if another deploy or rollback recorded one since was that opts.SHA doesn't
+// include. Plan's supersede check alone can't stop an older commit from going out over a newer one.
+func (e *Env) overtaken(ctx context.Context, opts Options, was *release.Release) (*release.Release, error) {
+	if opts.Force {
+		return nil, nil
+	}
+	now, err := e.Store.Current(ctx)
+	if err != nil || now == nil || (was != nil && now.Version == was.Version) || now.SHA == opts.SHA {
+		return nil, err
+	}
+	if e.Git != nil && e.Git.Has(now.SHA) {
+		if older, err := e.Git.IsAncestor(now.SHA, opts.SHA); err != nil || older {
+			return nil, err
+		}
+	}
+	return now, nil
 }
 
 func without(names, drop []string) []string {
@@ -345,12 +425,13 @@ func (e *Env) register(ctx context.Context, names []string, p *Plan, sha string,
 		for _, name := range names {
 			fam, _, _ := e.Manifest.Family(name)
 			template, image := fam.Template, p.Images[name]
+			tags := map[string]string{"ecsd:sha": sha, "ecsd:template": template}
 			if from != nil {
+				// A copy keeps its source's ecsd:template: the template it was made from.
 				template, image = from[name], ""
+				delete(tags, "ecsd:template")
 			}
-			r, err := e.ECS.Register(ctx, template, p.Holds[name], image, map[string]string{
-				"ecsd:sha": sha, "ecsd:template": template,
-			})
+			r, err := e.ECS.Register(ctx, template, p.Holds[name], image, tags)
 			if err != nil {
 				return err
 			}

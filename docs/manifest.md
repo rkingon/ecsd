@@ -55,7 +55,7 @@ CloudFormation can't ignore a property. When a stack update changes a service's 
 the template), it moves the service onto the template itself, image and all, until the next deploy. So:
 
 - give the template a real, runnable image, not a placeholder;
-- run `ecsd deploy --force` right after any stack update that changes a template.
+- run `ecsd deploy` right after any stack update that changes a template. It deploys even an already-released commit when a template changed.
 
 ```ts
 const api = new ecs.FargateTaskDefinition(this, "Api", { family: "shop-prod-api", cpu: 512, memoryLimitMiB: 1024 });
