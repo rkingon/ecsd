@@ -12,7 +12,7 @@ func TestDeploy(t *testing.T) {
 		Services: []string{"api"}, Families: []string{"shop-api", "shop-worker"},
 		PassRoles:         []string{"arn:aws:iam::123:role/exec", "arn:aws:iam::123:role/exec"},
 		ManifestParameter: "/shop/prod/deploy", ReleaseParameter: "/shop/prod/release",
-		ReleaseFamily: "shop-api", ECRAccount: "999", ECRRegion: "us-west-2",
+		ReleaseFamily: "shop-api", ECRRepositories: []string{"arn:aws:ecr:us-west-2:999:repository/shop/api"},
 	})
 	j := p.JSON()
 	for _, st := range p.Statement {
@@ -23,7 +23,7 @@ func TestDeploy(t *testing.T) {
 			t.Errorf("RunTask on %v, want the release task's family only", st.Resource)
 		}
 	}
-	if !strings.Contains(j, `"arn:aws:ecr:us-west-2:999:repository/*"`) {
+	if !strings.Contains(j, `"arn:aws:ecr:us-west-2:999:repository/shop/api"`) || strings.Contains(j, "repository/*") {
 		t.Errorf("no ecr:DescribeImages on the registry:\n%s", j)
 	}
 	if strings.Contains(Deploy(Inputs{Partition: "aws", Region: "r", Account: "1", Cluster: "c", ReleaseParameter: "/a"}).JSON(), "ecs:RunTask") {

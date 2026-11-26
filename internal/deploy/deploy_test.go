@@ -488,3 +488,17 @@ func TestOtherAppsReleaseTasksDontBlock(t *testing.T) {
 	w.ecs.StartTask("other-api", ReleaseStartedBy("other"), -1)
 	w.mustDeploy(c1)
 }
+
+func TestStaleRerunOfRolledBackCommitSkips(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	w.mustDeploy(c2)
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	w.mustDeploy(c3)
+	res, err := w.deploy(c2)
+	if err != nil || !strings.Contains(res.Skipped, "superseded") {
+		t.Errorf("stale rerun of the rolled-back %s = %+v, %v; want a quiet superseded skip", c2[:7], res, err)
+	}
+}

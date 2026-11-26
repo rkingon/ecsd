@@ -18,8 +18,8 @@ type Inputs struct {
 	LogGroups                  []string
 	ManifestParameter          string // empty when the manifest is a file
 	ReleaseParameter           string
-	ReleaseFamily              string // the release task's; empty without one
-	ECRAccount, ECRRegion      string // the registry's, when it's ECR: tags are resolved there
+	ReleaseFamily              string   // the release task's; empty without one
+	ECRRepositories            []string // ARNs of the ECR repositories the images name: their tags are resolved there
 }
 
 type Policy struct {
@@ -91,10 +91,7 @@ func Deploy(in Inputs) Policy {
 	}
 	st = append(st, Statement{Sid: "TagWhatItCreates", Effect: "Allow", Action: []string{"ecs:TagResource"}, Resource: tagged,
 		Condition: map[string]map[string]any{"StringEquals": {"ecs:CreateAction": []string{"RegisterTaskDefinition", "RunTask"}}}})
-	if in.ECRAccount != "" {
-		st = append(st, Statement{Sid: "PinImages", Effect: "Allow", Action: []string{"ecr:DescribeImages"},
-			Resource: []string{fmt.Sprintf("arn:%s:ecr:%s:%s:repository/*", in.Partition, in.ECRRegion, in.ECRAccount)}})
-	}
+	st = append(st, Statement{Sid: "PinImages", Effect: "Allow", Action: []string{"ecr:DescribeImages"}, Resource: in.ECRRepositories})
 	if in.ManifestParameter != "" {
 		st = append(st, Statement{Sid: "Manifest", Effect: "Allow", Action: []string{"ssm:GetParameter"},
 			Resource: []string{in.parameter(in.ManifestParameter)}})

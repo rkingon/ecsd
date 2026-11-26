@@ -205,8 +205,20 @@ func iamPolicyCmd(a *app) *cobra.Command {
 				}
 				in.ReleaseFamily = aws.ToString(def.Family)
 			}
-			if acct, region, ok := (images.Ref{Host: strings.SplitN(a.manifest.Registry, "/", 2)[0]}).ECR(); ok {
-				in.ECRAccount, in.ECRRegion = acct, region
+			env := a.env()
+			for _, name := range a.manifest.Names() {
+				img, err := env.Image(name, strings.Repeat("0", 40))
+				if err != nil {
+					return err
+				}
+				ref, err := images.Parse(img)
+				if err != nil {
+					return err
+				}
+				if acct, region, ok := ref.ECR(); ok {
+					in.ECRRepositories = appendNew(in.ECRRepositories,
+						fmt.Sprintf("arn:%s:ecr:%s:%s:repository/%s", caller.Partition, region, acct, ref.Repo))
+				}
 			}
 			if operator {
 				return printJSON(iampolicy.Operator(in))

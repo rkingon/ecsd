@@ -124,6 +124,9 @@ func (e *Env) inRegistry(name, img string) error {
 	return nil
 }
 
+// Image is ecsd.yml's image for name at sha, before pinning.
+func (e *Env) Image(name, sha string) (string, error) { return e.image(name, Options{SHA: sha}) }
+
 func (e *Env) image(name string, opts Options) (string, error) {
 	if img, ok := opts.Images[name]; ok {
 		return img, nil
@@ -150,13 +153,6 @@ func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (strin
 	if cur.SHA == sha {
 		return fmt.Sprintf("%s is already released (version %d)", short(sha), cur.Version), nil
 	}
-	history, err := e.Store.History(ctx, 0)
-	if err != nil {
-		return "", err
-	}
-	if rb, bad := release.RolledBackFrom(history, sha); bad {
-		return "", fmt.Errorf("%s was rolled back from in release version %d (%s): --force deploys it again", short(sha), rb.Version, rb.By)
-	}
 	if e.Git == nil {
 		return "", errors.New("not in a git repository, so whether this commit is behind the released one can't be checked (--force deploys anyway)")
 	}
@@ -169,6 +165,14 @@ func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (strin
 	}
 	if behind {
 		return fmt.Sprintf("superseded: the released %s already includes %s", short(cur.SHA), short(sha)), nil
+	}
+	// After the superseded check: a stale rerun of a rolled-back commit, once a newer one is released, skips quietly.
+	history, err := e.Store.History(ctx, 0)
+	if err != nil {
+		return "", err
+	}
+	if rb, bad := release.RolledBackFrom(history, sha); bad {
+		return "", fmt.Errorf("%s was rolled back from in release version %d (%s): --force deploys it again", short(sha), rb.Version, rb.By)
 	}
 	if len(e.Config.SkipUnlessChanged) > 0 {
 		changed, err := e.Git.Changed(cur.SHA, sha)
