@@ -47,7 +47,13 @@ resource "aws_ssm_parameter" "deploy" {
 ```
 
 Terraform's task definition resource deregisters the revision it replaces. That's harmless: ecsd's revisions are its
-own, in the same family.
+own. But the template it registers in its place is the family's newest revision until the next deploy, and an app that
+starts tasks by family name runs it, placeholder image and all. To keep templates out of the family apps start, register
+them in a family of their own and name the one ecsd registers into:
+
+```hcl
+tasks = { worker = { template = aws_ecs_task_definition.worker_template.arn, family = "shop-prod-worker" } }
+```
 
 ## CDK and CloudFormation
 

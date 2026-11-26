@@ -107,7 +107,11 @@ func (a *app) manifestParameter() string {
 }
 
 // load is everything a stage command needs.
-func (a *app) load(ctx context.Context) error {
+func (a *app) load(ctx context.Context) error { return a.loadStage(ctx, true) }
+
+// loadStage with check unset skips crossCheck, for commands that run before the infrastructure the commit needs is
+// applied.
+func (a *app) loadStage(ctx context.Context, check bool) error {
 	if err := a.needStage(); err != nil {
 		return err
 	}
@@ -128,8 +132,10 @@ func (a *app) load(ctx context.Context) error {
 		if m.Region != "" && m.Region != a.aws.Region {
 			return fmt.Errorf("the manifest is for %s, the credentials' region is %s", m.Region, a.aws.Region)
 		}
-		if err := crossCheck(a.cfg, m); err != nil {
-			return err
+		if check {
+			if err := crossCheck(a.cfg, m); err != nil {
+				return err
+			}
 		}
 		a.manifest = m
 	}

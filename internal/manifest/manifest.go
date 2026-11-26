@@ -30,6 +30,7 @@ type Manifest struct {
 
 type Family struct {
 	Template string   `json:"template" jsonschema_description:"Task definition ARN (or family:revision) every deploy copies, changing only the image."`
+	Family   string   `json:"family,omitempty" jsonschema_description:"The family ecsd registers into, when it isn't the template's. In the template's family, a template your infrastructure registers is the newest revision until the next deploy, so it's what starts for anything that runs tasks by family name."`
 	Service  string   `json:"service,omitempty" jsonschema_description:"Services only: the ECS service's name, when it isn't the key."`
 	Network  *Network `json:"network,omitempty" jsonschema_description:"Tasks only: overrides the manifest's network."`
 }

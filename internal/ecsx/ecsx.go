@@ -93,16 +93,19 @@ type Registered struct {
 	Reused    bool
 }
 
-// Register copies template as a new revision of its family, changing only the image of containers (the first when
-// none are named; nothing when image is empty) and adding tags. Never the family's latest revision: that may be an older deploy's. When the latest already
-// is this copy (same template, image and tags), as on a rerun, it's reused rather than registered again, so services
-// already on it aren't restarted.
-func (c *Client) Register(ctx context.Context, template string, containers []string, image string, tags map[string]string) (Registered, error) {
+// Register copies template as a new revision of family (the template's when empty), changing only the image of
+// containers (the first when none are named; nothing when image is empty) and adding tags. Never the family's latest
+// revision: that may be an older deploy's. When the latest already is this copy (same image and tags), as on a rerun,
+// it's reused rather than registered again, so services already on it aren't restarted.
+func (c *Client) Register(ctx context.Context, template, family string, containers []string, image string, tags map[string]string) (Registered, error) {
 	def, err := c.Describe(ctx, template)
 	if err != nil {
 		return Registered{}, err
 	}
 	td := def.TaskDefinition
+	if family != "" {
+		td.Family = aws.String(family)
+	}
 	if len(containers) == 0 {
 		containers = []string{""}
 	}

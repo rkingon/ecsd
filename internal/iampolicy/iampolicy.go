@@ -13,7 +13,8 @@ type Inputs struct {
 	Partition, Region, Account string
 	Cluster                    string   // name
 	Services                   []string // ECS service names
-	Families                   []string // every task definition family the manifest names
+	Families                   []string // every task definition family ecsd registers into
+	Templates                  []string // template families outside Families: only run --from-template runs them
 	PassRoles                  []string // the templates' task and execution roles
 	LogGroups                  []string
 	ManifestParameter          string // empty when the manifest is a file
@@ -110,7 +111,7 @@ func Operator(in Inputs) Policy {
 		{Sid: "Read", Effect: "Allow", Resource: []string{"*"}, Action: []string{
 			"ecs:DescribeTaskDefinition", "ecs:DescribeServices", "ecs:DescribeTasks", "ecs:ListTasks", "ecs:ListTagsForResource",
 		}},
-		{Sid: "OneOffTasks", Effect: "Allow", Action: []string{"ecs:RunTask"}, Resource: in.families(in.Families), Condition: clusterIs},
+		{Sid: "OneOffTasks", Effect: "Allow", Action: []string{"ecs:RunTask"}, Resource: in.families(append(slices.Clone(in.Families), in.Templates...)), Condition: clusterIs},
 		{Sid: "TagOneOffTasks", Effect: "Allow", Action: []string{"ecs:TagResource"}, Resource: []string{in.tasks()},
 			Condition: map[string]map[string]any{"StringEquals": {"ecs:CreateAction": "RunTask"}}},
 		{Sid: "StopAndExec", Effect: "Allow", Action: []string{"ecs:StopTask", "ecs:ExecuteCommand"},

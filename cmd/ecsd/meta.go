@@ -103,8 +103,12 @@ func validateLive(ctx context.Context, a *app) error {
 		if cb := s.DeploymentConfiguration; cb == nil || cb.DeploymentCircuitBreaker == nil || !cb.DeploymentCircuitBreaker.Enable {
 			a.ui.Warnf("%s: no deployment circuit breaker, so a rollout whose tasks never start runs until timeouts.roll", name)
 		}
-		if family := aws.ToString(def.Family); !strings.HasPrefix(ecsx.Short(aws.ToString(s.TaskDefinition)), family+":") {
-			a.ui.Warnf("%s: runs family %s, its template is %s", name, ecsx.Short(aws.ToString(s.TaskDefinition)), family)
+		family := fam.Family
+		if family == "" {
+			family = aws.ToString(def.Family)
+		}
+		if !strings.HasPrefix(ecsx.Short(aws.ToString(s.TaskDefinition)), family+":") {
+			a.ui.Warnf("%s: runs %s, outside family %s that ecsd registers into", name, ecsx.Short(aws.ToString(s.TaskDefinition)), family)
 		}
 	}
 	return errors.Join(errs...)
@@ -197,7 +201,12 @@ func iamPolicyCmd(a *app) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				in.Families = appendNew(in.Families, aws.ToString(def.Family))
+				if fam.Family != "" && fam.Family != aws.ToString(def.Family) {
+					in.Families = appendNew(in.Families, fam.Family)
+					in.Templates = appendNew(in.Templates, aws.ToString(def.Family))
+				} else {
+					in.Families = appendNew(in.Families, aws.ToString(def.Family))
+				}
 				for _, r := range []*string{def.TaskRoleArn, def.ExecutionRoleArn} {
 					if r != nil {
 						in.PassRoles = appendNew(in.PassRoles, *r)
@@ -211,11 +220,14 @@ func iamPolicyCmd(a *app) *cobra.Command {
 			}
 			if r := a.cfg.Release; r != nil {
 				fam, _, _ := a.manifest.Family(r.Task)
-				def, err := c.Describe(ctx, fam.Template)
-				if err != nil {
-					return err
+				in.ReleaseFamily = fam.Family
+				if in.ReleaseFamily == "" {
+					def, err := c.Describe(ctx, fam.Template)
+					if err != nil {
+						return err
+					}
+					in.ReleaseFamily = aws.ToString(def.Family)
 				}
-				in.ReleaseFamily = aws.ToString(def.Family)
 			}
 			env := a.env()
 			for _, name := range a.manifest.Names() {

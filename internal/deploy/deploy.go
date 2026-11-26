@@ -244,8 +244,8 @@ type Result struct {
 // on_failure is rollback; the release task's changes (migrations) stay, as they must be backward compatible.
 //
 // The newest revision of every family is the current release's, outside a deploy: apps that start tasks by family name
-// run released code. So task families are registered only once every check has passed, and any family a failed deploy
-// registered gets a copy of its released revision on top again.
+// run released code. So task families are registered only once every check has passed, and a failed deploy puts a copy
+// of the released revision back on top of every family.
 func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	p, err := e.Plan(ctx, opts)
 	if err != nil {
@@ -364,29 +364,23 @@ func without(names, drop []string) []string {
 	return out
 }
 
-// failed puts a copy of the current release's revision on top of every family this deploy registered, and returns err.
+// failed puts a copy of the current release's revision back on top of every family, and returns err: those this deploy
+// registered, and any a template was registered into since. A family already topped by the release's is left as it is.
 // It outlives a cancelled deploy's context: it's a few quick calls, and skipping it leaves unreleased code where apps
 // find it by family name.
 func (e *Env) failed(ctx context.Context, err error, cur *release.Release, regs map[string]ecsx.Registered) error {
-	var names []string
-	for name, r := range regs {
-		if cur == nil || r.ARN != cur.Revisions[name] {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		return err
-	}
-	slices.Sort(names)
 	if cur == nil {
-		e.UI.Warnf("nothing released yet, so the newest revisions of %s stay this failed deploy's", strings.Join(names, ", "))
+		if len(regs) > 0 {
+			names := slices.Sorted(maps.Keys(regs))
+			e.UI.Warnf("nothing released yet, so the newest revisions of %s stay this failed deploy's", strings.Join(names, ", "))
+		}
 		return err
 	}
 	var restorable []string
-	for _, name := range names {
+	for _, name := range e.Manifest.Names() {
 		if cur.Revisions[name] != "" {
 			restorable = append(restorable, name)
-		} else {
+		} else if _, ok := regs[name]; ok {
 			e.UI.Warnf("%s: not in the current release, so its newest revision stays this failed deploy's", name)
 		}
 	}
@@ -438,7 +432,7 @@ func (e *Env) register(ctx context.Context, names []string, p *Plan, sha string,
 				template, image = from[name], ""
 				delete(tags, "ecsd:template")
 			}
-			r, err := e.ECS.Register(ctx, template, p.Holds[name], image, tags)
+			r, err := e.ECS.Register(ctx, template, fam.Family, p.Holds[name], image, tags)
 			if err != nil {
 				return err
 			}

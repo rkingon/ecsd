@@ -16,7 +16,7 @@ ecsd deploy --stage prod
 8. **Smoke.** Requests that must get the expected status and body.
 9. **Record.** Before the roll and again before recording, ecsd re-reads the current release. If a rollback, or a deploy of a commit this one doesn't include, was recorded meanwhile, it stops; if that happened mid-roll, it returns the services to that release. Task families get their new revisions only now, once every check has passed. The release (commit, pinned images, revisions) is written to an SSM parameter whose versions form the history. With `on_failure: rollback`, a failure in steps 6–8 returns the services to the current release.
 
-Outside a deploy, the newest revision of every family is the current release's, so an app that starts tasks by family name runs released code. A deploy that fails at any step puts a copy of the released revision back on top of each family it registered.
+Outside a deploy, the newest revision of every family is the current release's, so an app that starts tasks by family name runs released code. A deploy that fails at any step puts a copy of the released revision back on top of every family. A template your infrastructure registers into a family is its newest revision until the next deploy, unless the manifest's `family` gives ecsd a family of its own.
 
 `ecsd rollback` returns the stage to a recorded release: copies of its revisions on top of every family, services rolled onto them, and no migrations. The copies carry the release's whole config (roles, secrets, env); `--images-only` puts its images into the current templates instead, for when that config has since gone. `ecsd console` is `heroku run` for ECS.
 

@@ -649,3 +649,39 @@ func TestImageForSeveralContainers(t *testing.T) {
 		t.Errorf("rerun = %+v, %v", res, err)
 	}
 }
+
+func TestFailedDeployPutsReleaseOverNewTemplates(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	// Infrastructure replaced worker's template: it's now the newest revision of the family apps start.
+	w.env.Manifest.Tasks["worker"] = manifest.Family{Template: w.ecs.AddTemplate("shop-worker", "placeholder")}
+	w.ecs.ExitCodes["shop-api"] = 1
+	if _, err := w.deploy(c2); err == nil {
+		t.Fatal("deploy with a failing release task succeeded")
+	}
+	if got := w.ecs.LatestImage("shop-worker"); !strings.HasSuffix(got, ":"+c1) {
+		t.Errorf("shop-worker's newest revision runs %s, not the released %s", got, c1[:7])
+	}
+}
+
+func TestOwnFamilyKeepsTemplatesOut(t *testing.T) {
+	w := newWorld(t, configYAML)
+	worker := w.env.Manifest.Tasks["worker"]
+	worker.Family = "shop-worker-app"
+	w.env.Manifest.Tasks["worker"] = worker
+	rel := w.mustDeploy(c1)
+	if !strings.Contains(rel.Revisions["worker"], "/shop-worker-app:") {
+		t.Errorf("worker registered as %s", rel.Revisions["worker"])
+	}
+	w.ecs.AddTemplate("shop-worker", "placeholder")
+	if got := w.ecs.LatestImage("shop-worker-app"); !strings.HasSuffix(got, ":"+c1) {
+		t.Errorf("shop-worker-app's newest revision runs %s", got)
+	}
+	w.mustDeploy(c2)
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.ecs.LatestImage("shop-worker-app"); !strings.HasSuffix(got, ":"+c1) {
+		t.Errorf("after the rollback shop-worker-app's newest revision runs %s", got)
+	}
+}

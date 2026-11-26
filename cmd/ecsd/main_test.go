@@ -79,6 +79,14 @@ func (s *stage) write(name, body string) {
 	}
 }
 
+func (s *stage) read(name string) string {
+	b, err := os.ReadFile(filepath.Join(s.dir, name))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return string(b)
+}
+
 func (s *stage) git(args ...string) string {
 	s.t.Helper()
 	cmd := exec.Command("git", args...)
@@ -137,6 +145,13 @@ func TestCLI(t *testing.T) {
 	if _, err := s.run("plan", "--stage", "staging"); err == nil || !strings.Contains(err.Error(), "no such parameter") {
 		t.Errorf("plan without a manifest: %v", err)
 	}
+	// A name the manifest gets only once the commit's infrastructure is applied.
+	s.write("ecsd.yml", strings.Replace(s.read("ecsd.yml"), "release:", "  jobs: ${registry}/shop-jobs:${sha}\nrelease:", 1))
+	s.must("superseded")
+	if _, err := s.run("plan"); err == nil || !strings.Contains(err.Error(), "images.jobs") {
+		t.Errorf("plan with a name the manifest lacks: %v", err)
+	}
+	s.git("checkout", "-q", "ecsd.yml")
 	if _, err := s.run("run", "--release"); err == nil || !strings.Contains(err.Error(), "--from-template") {
 		t.Errorf("run --release before any release: %v", err)
 	}
