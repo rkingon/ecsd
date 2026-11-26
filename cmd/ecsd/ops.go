@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/spf13/cobra"
 
+	"github.com/rkingon/ecsd/internal/deploy"
 	"github.com/rkingon/ecsd/internal/ecsx"
 	"github.com/rkingon/ecsd/internal/logs"
 	"github.com/rkingon/ecsd/internal/manifest"
@@ -67,14 +68,28 @@ func (a *app) container(ctx context.Context, revision, name string) (*types.Cont
 
 func runCmd(a *app) *cobra.Command {
 	var container string
-	var detach bool
+	var detach, asRelease bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
-		Use:   "run <name> [-- command...]",
+		Use:   "run <name> [-- command...] | run --release [-- command...]",
 		Short: "Run a one-off task from the released revision of a service or task; exits with its exit code",
-		Args:  cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if asRelease {
+				if len(args) > 0 && cmd.ArgsLenAtDash() != 0 {
+					return errors.New("--release takes no name: the task is release.task; give a command after --")
+				}
+				return nil
+			}
+			return cobra.MinimumNArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if asRelease {
+				if detach || cmd.Flags().Changed("timeout") {
+					return errors.New("--release waits for its task and uses release.timeout: drop --detach and --timeout")
+				}
+				return a.runRelease(ctx, container, args)
+			}
 			if err := a.load(ctx); err != nil {
 				return err
 			}
@@ -131,7 +146,42 @@ func runCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "container whose command is overridden (default the first)")
 	cmd.Flags().BoolVar(&detach, "detach", false, "print the task ARN and return without waiting")
 	cmd.Flags().DurationVar(&timeout, "timeout", time.Hour, "stop the task after this long")
+	cmd.Flags().BoolVar(&asRelease, "release", false, "run release.task's command (or the one given) as a deploy's release step does: one at a time per app, waiting for any other")
 	return cmd
+}
+
+func (a *app) runRelease(ctx context.Context, container string, command []string) error {
+	if err := a.load(ctx); err != nil {
+		return err
+	}
+	r := a.cfg.Release
+	if r == nil {
+		return errors.New("--release: ecsd.yml has no release")
+	}
+	if len(command) == 0 {
+		command = r.Command
+	}
+	if container == "" {
+		container = r.Container
+	}
+	if container == "" {
+		if img, ok := a.cfg.ImageFor(r.Task); ok {
+			container = img.Container
+		}
+	}
+	rev, err := a.released(ctx, r.Task)
+	if err != nil {
+		return err
+	}
+	cd, err := a.container(ctx, rev, container)
+	if err != nil {
+		return err
+	}
+	err = a.env().RunRelease(ctx, rev, aws.ToString(cd.Name), command, map[string]string{"ecsd:run-by": user()})
+	if failed := (*deploy.TaskFailed)(nil); errors.As(err, &failed) {
+		return exitError{int(failed.Code)}
+	}
+	return err
 }
 
 // user names whoever runs a one-off task, in what startedBy allows.

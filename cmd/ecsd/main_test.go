@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 
+	"github.com/rkingon/ecsd/internal/deploy"
 	"github.com/rkingon/ecsd/internal/testutil"
 	"github.com/rkingon/ecsd/internal/ui"
 )
@@ -155,6 +158,25 @@ func TestCLI(t *testing.T) {
 	var exit exitError
 	if _, err := s.run("run", "web", "--", "false"); !errors.As(err, &exit) || exit.code != 3 {
 		t.Errorf("run's exit = %v, want 3", err)
+	}
+
+	marker := deploy.ReleaseStartedBy("shop")
+	newest := func() []string {
+		tasks := s.ecs.TasksStartedBy(marker)
+		slices.SortFunc(tasks, func(a, b types.Task) int { return a.CreatedAt.Compare(*b.CreatedAt) })
+		return tasks[len(tasks)-1].Overrides.ContainerOverrides[0].Command
+	}
+	delete(s.ecs.ExitCodes, "shop-web")
+	s.must("run", "--release")
+	if got := newest(); !slices.Equal(got, []string{"migrate"}) {
+		t.Errorf("run --release ran %v under %s", got, marker)
+	}
+	s.ecs.ExitCodes["shop-web"] = 4
+	if _, err := s.run("run", "--release", "--", "migrate", "--down"); !errors.As(err, &exit) || exit.code != 4 || !slices.Equal(newest(), []string{"migrate", "--down"}) {
+		t.Errorf("run --release -- migrate --down: exit %v, ran %v", err, newest())
+	}
+	if _, err := s.run("run", "--release", "web"); err == nil {
+		t.Error("run --release took a name")
 	}
 
 	if out := s.must("logs", "web"); !strings.Contains(out, "app/01234567 migrated 3") {

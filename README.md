@@ -10,7 +10,7 @@ ecsd deploy --stage prod
 2. **Pin and verify images.** Every image must come from the manifest's registry, and is pinned to its digest (ECR tags are resolved), so the release record and any rollback to it mean the same bytes. `verify_image` runs for each one, such as a check of its provenance attestation.
 3. **Register.** Each service gets a new revision copied from the template your infrastructure owns, with only the image changed. It never copies the family's latest revision, which may be an older deploy's. A rerun reuses the revisions it already registered.
 4. **Gates.** `before_roll` drains running jobs and runs your checks.
-5. **Release task.** Migrations run as a one-off task from the new revision, one at a time per app. If another deploy's release task is running, ecsd waits for it and never stops it. If two start together, the older one runs. A cancelled deploy stops its own task. The task's logs are printed and its exit code decides whether the deploy continues.
+5. **Release task.** Migrations run as a one-off task from the new revision, one at a time per app. If another release task is running, whether a deploy's or one started with `ecsd run --release`, ecsd waits for it and never stops it. If two start together, the older one runs. A cancelled deploy stops its own task. The task's logs are printed and its exit code decides whether the deploy continues.
 6. **Roll.** Every service rolls in parallel, and each rollout is followed by its deployment ID until it completes and the old tasks are gone. A circuit-breaker rollback counts as a failure. `aws ecs wait services-stable` reports it as success, because the service is stable, just on the old revision.
 7. **Health.** Each endpoint must report the deployed commit three times in a row, so an old task still behind the load balancer can't pass the check.
 8. **Smoke.** Requests that must get the expected status and body.
@@ -129,6 +129,7 @@ The action downloads the release that matches the commit it's pinned to. Before 
 | `history` | releases, newest first |
 | `status` | each service's revision and rollout, the current release, tasks that failed in the last hour |
 | `run <name> -- cmd` | a one-off task from the released revision; exits with its exit code |
+| `run --release [-- cmd]` | `release.command` (or `cmd`) from the released revision, taking the release lock a deploy's release task takes |
 | `console` | your own one-off task with a shell in it, stopped when you leave (`--keep`, `--stop`) |
 | `exec <service> -- cmd` | a command in a running task |
 | `tunnel <service> [host:]port` | a local port forwarded into a task, or through it to a database |

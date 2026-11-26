@@ -452,8 +452,6 @@ func (e *Env) network(ctx context.Context, name string) (*manifest.Network, erro
 	return nil, errors.New("no network for one-off tasks: set the manifest's network")
 }
 
-// runRelease runs the release task, one at a time per app: it waits for any other deploy's, and if one started
-// alongside its own, the older one runs and this one stops and waits again. An interrupted deploy stops its task.
 func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, sha string) error {
 	r := e.Config.Release
 	reg, ok := regs[r.Task]
@@ -464,25 +462,32 @@ func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, s
 	if container == "" {
 		container = reg.Container
 	}
+	return e.RunRelease(ctx, reg.ARN, container, r.Command, map[string]string{"ecsd:sha": sha})
+}
+
+// RunRelease runs command (nil: the container's own) from revision as the app's release task, one at a time per app:
+// it waits for any other release task, and if one started alongside its own, the older one runs and this one stops
+// and waits again. An interrupted run stops its task. A non-zero exit is a *TaskFailed.
+func (e *Env) RunRelease(ctx context.Context, revision, container string, command []string, tags map[string]string) error {
+	r := e.Config.Release
 	net, err := e.network(ctx, r.Task)
 	if err != nil {
 		return err
 	}
-	return e.UI.Group("release: "+r.Task+" "+strings.Join(r.Command, " "), func() error {
+	return e.UI.Group("release: "+r.Task+" "+strings.Join(command, " "), func() error {
 		for attempt := 0; ; attempt++ {
 			if err := e.ECS.WaitNone(ctx, ReleaseStartedBy(e.App), r.Wait.Or(30*time.Minute)); err != nil {
 				return fmt.Errorf("release: %w", err)
 			}
 			arn, err := e.ECS.Run(ctx, ecsx.RunInput{
-				Revision: reg.ARN, Container: container, Command: r.Command, StartedBy: ReleaseStartedBy(e.App), Network: net,
-				LaunchType: e.Manifest.LaunchType, Strategy: e.Manifest.CapacityProviderStrategy,
-				Tags: map[string]string{"ecsd:sha": sha},
+				Revision: revision, Container: container, Command: command, StartedBy: ReleaseStartedBy(e.App), Network: net,
+				LaunchType: e.Manifest.LaunchType, Strategy: e.Manifest.CapacityProviderStrategy, Tags: tags,
 			})
 			if err != nil {
 				return err
 			}
 			if lost, err := e.lostRace(ctx, arn); err != nil || lost {
-				e.stop(arn, "another deploy's release task started first")
+				e.stop(arn, "another release task started first")
 				if err != nil {
 					return err
 				}
@@ -492,10 +497,18 @@ func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, s
 				continue
 			}
 			e.UI.Printf("task %s", ecsx.TaskID(arn))
-			return e.awaitRelease(ctx, arn, reg.ARN, container, r.Timeout.Or(30*time.Minute))
+			return e.awaitRelease(ctx, arn, revision, container, r.Timeout.Or(30*time.Minute))
 		}
 	})
 }
+
+// TaskFailed is a release task's non-zero exit.
+type TaskFailed struct {
+	Task string
+	Code int32
+}
+
+func (t *TaskFailed) Error() string { return fmt.Sprintf("release task %s exited %d", t.Task, t.Code) }
 
 // lostRace reports whether another release task started alongside arn, earlier.
 func (e *Env) lostRace(ctx context.Context, arn string) (bool, error) {
@@ -542,7 +555,7 @@ func (e *Env) awaitRelease(ctx context.Context, arn, revision, container string,
 		return err
 	}
 	if code != 0 {
-		return fmt.Errorf("release task %s exited %d", ecsx.TaskID(arn), code)
+		return &TaskFailed{ecsx.TaskID(arn), code}
 	}
 	e.UI.Printf("release task %s exited 0", ecsx.TaskID(arn))
 	return nil
