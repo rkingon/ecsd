@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rkingon/ecsd/internal/deploy"
 	"github.com/rkingon/ecsd/internal/ecsx"
+	"github.com/rkingon/ecsd/internal/manifest"
 	"github.com/rkingon/ecsd/internal/release"
 )
 
@@ -176,7 +178,13 @@ func supersededCmd(a *app) *cobra.Command {
 		Short: "Say whether a deploy of the commit would do nothing (output skipped=true|false), to skip a build early",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := a.load(cmd.Context()); err != nil {
+			// Deploys need the manifest, so a stage without one has never been released: nothing supersedes this.
+			// CI that runs superseded before applying infrastructure gets through its first run.
+			if err := a.load(cmd.Context()); errors.Is(err, manifest.ErrNotFound) {
+				a.ui.Output("skipped", "false")
+				a.ui.Warnf("%v: nothing released yet, so not skipped", err)
+				return nil
+			} else if err != nil {
 				return err
 			}
 			full, err := a.resolveSHA(sha)

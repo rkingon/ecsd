@@ -126,7 +126,7 @@ The action downloads the release that matches the commit it's pinned to. Before 
 | `deploy` | the pipeline above (`--sha`, `--image name=ref`, `--force`, `--no-rollback`, `--skip-gates`) |
 | `plan` | what `deploy` would do |
 | `rollback` | to the release before the current one, or `--to <commit>` / `--to v12`; `--images-only` keeps the current templates |
-| `superseded` | whether a deploy would do nothing |
+| `superseded` | whether a deploy would do nothing; a stage with no manifest yet has nothing released, so it isn't skipped |
 | `history` | releases, newest first |
 | `status` | each service's revision and rollout, the current release, tasks that failed in the last hour |
 | `run <name> -- cmd` | a one-off task from the released revision; exits with its exit code |

@@ -15,6 +15,9 @@ type GetParameterAPI interface {
 	GetParameter(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
 
+// ErrNotFound is a manifest parameter that doesn't exist: the stage's infrastructure hasn't written it yet.
+var ErrNotFound = errors.New("no such parameter (has the stage's infrastructure been applied?)")
+
 // Fetch reads a manifest from ref: ssm:/path (or a bare /path) or file:path.
 func Fetch(ctx context.Context, client GetParameterAPI, ref string) (*Manifest, error) {
 	if path, ok := strings.CutPrefix(ref, "file:"); ok {
@@ -28,7 +31,7 @@ func Fetch(ctx context.Context, client GetParameterAPI, ref string) (*Manifest, 
 	if err != nil {
 		var nf *types.ParameterNotFound
 		if errors.As(err, &nf) {
-			return nil, fmt.Errorf("manifest %s: no such parameter (has the stage's infrastructure been applied?)", name)
+			return nil, fmt.Errorf("manifest %s: %w", name, ErrNotFound)
 		}
 		return nil, fmt.Errorf("manifest %s: %w", name, err)
 	}

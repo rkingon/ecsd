@@ -132,6 +132,11 @@ func TestCLI(t *testing.T) {
 	t.Setenv("GITHUB_SHA", "")
 
 	s.must("check")
+	// No manifest yet: superseded says "not skipped", while everything that touches the stage still fails.
+	s.must("superseded", "--stage", "staging")
+	if _, err := s.run("plan", "--stage", "staging"); err == nil || !strings.Contains(err.Error(), "no such parameter") {
+		t.Errorf("plan without a manifest: %v", err)
+	}
 	if _, err := s.run("run", "--release"); err == nil || !strings.Contains(err.Error(), "--from-template") {
 		t.Errorf("run --release before any release: %v", err)
 	}

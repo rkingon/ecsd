@@ -117,6 +117,9 @@ func (a *app) load(ctx context.Context) error {
 	if err := a.loadAWS(ctx); err != nil {
 		return err
 	}
+	if a.ui == nil {
+		a.ui = ui.New(os.Stderr)
+	}
 	if a.manifest == nil {
 		m, err := manifest.Fetch(ctx, a.ssm, a.manifestParameter())
 		if err != nil {
@@ -129,9 +132,6 @@ func (a *app) load(ctx context.Context) error {
 			return err
 		}
 		a.manifest = m
-	}
-	if a.ui == nil {
-		a.ui = ui.New(os.Stderr)
 	}
 	return nil
 }

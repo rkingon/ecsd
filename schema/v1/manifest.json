@@ -166,7 +166,7 @@
         "type": "string"
       },
       "type": "object",
-      "description": "Base URLs, as ${hosts.\u003cname\u003e} in health and smoke checks."
+      "description": "Base URLs or host names, substituted as written for ${hosts.\u003cname\u003e} in health and smoke checks."
     },
     "release_parameter": {
       "type": "string",

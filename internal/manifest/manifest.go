@@ -23,7 +23,7 @@ type Manifest struct {
 	Services map[string]Family `json:"services" jsonschema_description:"Services ecsd rolls, by name. Each must exist, and ignore task definition changes in whatever manages it."`
 	Tasks    map[string]Family `json:"tasks,omitempty" jsonschema_description:"Task families ecsd registers on every deploy without a service: one-off tasks, consoles, tasks an app starts itself."`
 	Network  *Network          `json:"network,omitempty" jsonschema_description:"For one-off tasks. Defaults to the first service's."`
-	Hosts    map[string]string `json:"hosts,omitempty" jsonschema_description:"Base URLs, as ${hosts.<name>} in health and smoke checks."`
+	Hosts    map[string]string `json:"hosts,omitempty" jsonschema_description:"Base URLs or host names, substituted as written for ${hosts.<name>} in health and smoke checks."`
 
 	ReleaseParameter string `json:"release_parameter,omitempty" jsonschema_description:"Where releases are recorded. Default /<app>/<stage>/release."`
 }
