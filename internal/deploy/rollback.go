@@ -13,9 +13,9 @@ type RollbackOptions struct {
 	SkipGates bool
 }
 
-// Rollback returns the stage to a recorded release: services to its revisions as they were, task families to copies of
-// them, so the newest revision of each is the release's again. No release task runs: a schema stays migrated, which is
-// why migrations must be backward compatible.
+// Rollback returns the stage to a recorded release. Every family gets a copy of the release's revision on top, so its
+// newest revision is the release's again, and the services roll onto those copies. No release task runs: a schema stays
+// migrated, which is why migrations must be backward compatible.
 func (e *Env) Rollback(ctx context.Context, opts RollbackOptions) (*release.Release, error) {
 	cur, err := e.Store.Current(ctx)
 	if err != nil {
@@ -45,16 +45,12 @@ func (e *Env) Rollback(ctx context.Context, opts RollbackOptions) (*release.Rele
 	if err := e.verifyImages(ctx, target.Images, target.SHA); err != nil {
 		return nil, err
 	}
-	from := map[string]string{}
 	for _, name := range e.Manifest.Names() {
-		rev, ok := target.Revisions[name]
-		if !ok {
+		if target.Revisions[name] == "" {
 			return nil, fmt.Errorf("release version %d has no revision for %s, which the manifest now has", target.Version, name)
 		}
-		from[name] = rev
 	}
-	plan := &Plan{Images: map[string]string{}, Holds: map[string]string{}}
-	regs, err := e.register(ctx, e.Manifest.TaskNames(), plan, target.SHA, from)
+	regs, err := e.register(ctx, e.Manifest.Names(), &Plan{Holds: map[string]string{}}, target.SHA, target.Revisions)
 	if err != nil {
 		return nil, err
 	}
@@ -63,15 +59,9 @@ func (e *Env) Rollback(ctx context.Context, opts RollbackOptions) (*release.Rele
 			return nil, err
 		}
 	}
-	if err := e.rollAndCheck(ctx, from, target.SHA); err != nil {
+	revisions := arns(regs)
+	if err := e.rollAndCheck(ctx, revisions, target.SHA); err != nil {
 		return nil, err
-	}
-	revisions := map[string]string{}
-	for name, rev := range from {
-		revisions[name] = rev
-	}
-	for name, r := range regs {
-		revisions[name] = r.ARN
 	}
 	rel := &release.Release{
 		SHA: target.SHA, Kind: release.Rollback, From: cur.SHA, Revisions: revisions, Images: target.Images,

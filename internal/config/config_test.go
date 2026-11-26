@@ -47,13 +47,14 @@ func TestParseFull(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
-		"unknown key":       "app: a\nimages: {x: y}\nrelase: {task: api}\n",
-		"unknown image key": "app: a\nimages: {x: {image: y, contaner: z}}\n",
-		"bad app":           "app: Shop\nimages: {x: y}\n",
+		"no verify_image":   "app: a\nimages: {x: y}\n",
+		"unknown key":       "app: a\nimages: {x: y}\nrelase: {task: api}\nverify_image: none\n",
+		"unknown image key": "app: a\nimages: {x: {image: y, contaner: z}}\nverify_image: none\n",
+		"bad app":           "app: Shop\nimages: {x: y}\nverify_image: none\n",
 		"no images":         "app: a\n",
-		"both gate kinds":   "app: a\nimages: {x: y}\nbefore_roll: [{drain: {started_by: s}, exec: e}]\n",
-		"bad on_failure":    "app: a\nimages: {x: y}\non_failure: retry\n",
-		"bad duration":      "app: a\nimages: {x: y}\nrelease: {task: api, timeout: soon}\n",
+		"both gate kinds":   "app: a\nimages: {x: y}\nbefore_roll: [{drain: {started_by: s}, exec: e}]\nverify_image: none\n",
+		"bad on_failure":    "app: a\nimages: {x: y}\non_failure: retry\nverify_image: none\n",
+		"bad duration":      "app: a\nimages: {x: y}\nrelease: {task: api, timeout: soon}\nverify_image: none\n",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {

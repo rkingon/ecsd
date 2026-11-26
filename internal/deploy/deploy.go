@@ -21,6 +21,7 @@ import (
 	"github.com/rkingon/ecsd/internal/ecsx"
 	"github.com/rkingon/ecsd/internal/expand"
 	"github.com/rkingon/ecsd/internal/gitx"
+	"github.com/rkingon/ecsd/internal/images"
 	"github.com/rkingon/ecsd/internal/logs"
 	"github.com/rkingon/ecsd/internal/manifest"
 	"github.com/rkingon/ecsd/internal/probe"
@@ -28,8 +29,12 @@ import (
 	"github.com/rkingon/ecsd/internal/ui"
 )
 
-// ReleaseStartedBy marks release tasks, so a deploy can find another deploy's.
-const ReleaseStartedBy = "ecsd-release"
+// ReleaseStartedBy marks an app's release tasks, so a deploy finds another deploy's of the same app, and only those:
+// apps sharing a cluster don't queue behind each other's migrations.
+func ReleaseStartedBy(app string) string {
+	s := "ecsd-release-" + app
+	return s[:min(len(s), 128)]
+}
 
 type Git interface {
 	Has(sha string) bool
@@ -46,6 +51,7 @@ type Env struct {
 	Logs       logs.API // optional: a release task's output
 	Git        Git      // nil outside a repository
 	Probe      *probe.Prober
+	Images     Pinner
 	UI         *ui.UI
 	Actor      string
 
@@ -55,10 +61,15 @@ type Env struct {
 	HealthInterval time.Duration
 }
 
+// Pinner turns an image reference into one pinned to its digest.
+type Pinner interface {
+	Pin(ctx context.Context, image string, allowTags bool) (string, error)
+}
+
 type Options struct {
 	SHA        string            // full commit hash
 	Images     map[string]string // name → image, over ecsd.yml's
-	Force      bool              // deploy even if superseded or unchanged
+	Force      bool              // deploy even if superseded, unchanged, released or rolled back from
 	NoRollback bool              // a failure leaves the services where they are
 	SkipGates  bool
 }
@@ -83,17 +94,34 @@ func (e *Env) Plan(ctx context.Context, opts Options) (*Plan, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := e.inRegistry(name, img); err != nil {
+			return nil, err
+		}
 		p.Images[name] = img
 		if i, ok := e.Config.ImageFor(name); ok {
 			p.Holds[name] = i.Container
 		}
 	}
 	if !opts.Force {
-		if p.Skip, err = e.skip(cur, opts.SHA); err != nil {
+		if p.Skip, err = e.skip(ctx, cur, opts.SHA); err != nil {
 			return nil, err
 		}
 	}
 	return p, nil
+}
+
+// inRegistry enforces that images come from the manifest's registry, unless image_policy.any_registry.
+func (e *Env) inRegistry(name, img string) error {
+	if e.Config.ImagePolicy.AnyRegistry {
+		return nil
+	}
+	if e.Manifest.Registry == "" {
+		return errors.New("the manifest names no registry: set its registry, or image_policy.any_registry in ecsd.yml")
+	}
+	if !images.InRegistry(img, e.Manifest.Registry) {
+		return fmt.Errorf("%s: image %s isn't in the manifest's registry %s (image_policy.any_registry allows it)", name, img, e.Manifest.Registry)
+	}
+	return nil
 }
 
 func (e *Env) image(name string, opts Options) (string, error) {
@@ -115,12 +143,19 @@ func (e *Env) image(name string, opts Options) (string, error) {
 	return ref, nil
 }
 
-func (e *Env) skip(cur *release.Release, sha string) (string, error) {
+func (e *Env) skip(ctx context.Context, cur *release.Release, sha string) (string, error) {
 	if cur == nil {
 		return "", nil
 	}
 	if cur.SHA == sha {
 		return fmt.Sprintf("%s is already released (version %d)", short(sha), cur.Version), nil
+	}
+	history, err := e.Store.History(ctx, 0)
+	if err != nil {
+		return "", err
+	}
+	if rb, bad := release.RolledBackFrom(history, sha); bad {
+		return "", fmt.Errorf("%s was rolled back from in release version %d (%s): --force deploys it again", short(sha), rb.Version, rb.By)
 	}
 	if e.Git == nil {
 		return "", errors.New("not in a git repository, so whether this commit is behind the released one can't be checked (--force deploys anyway)")
@@ -154,6 +189,10 @@ type Result struct {
 
 // Deploy runs the pipeline. A failure after the rollout starts returns the services to the current release when
 // on_failure is rollback; the release task's changes (migrations) stay, as they must be backward compatible.
+//
+// The newest revision of every family is the current release's, outside a deploy: apps that start tasks by family name
+// run released code. So task families are registered only once every check has passed, and any family a failed deploy
+// registered gets a copy of its released revision on top again.
 func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	p, err := e.Plan(ctx, opts)
 	if err != nil {
@@ -169,38 +208,52 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	e.UI.Output("skipped", "false")
 	e.UI.Step("deploying %s to %s", short(opts.SHA), e.Stage)
 
+	if err := e.pin(ctx, p.Images); err != nil {
+		return nil, err
+	}
 	if err := e.verifyImages(ctx, p.Images, opts.SHA); err != nil {
 		return nil, err
 	}
-	regs, err := e.register(ctx, e.Manifest.Names(), p, opts.SHA, nil)
+	early := e.Manifest.ServiceNames()
+	if r := e.Config.Release; r != nil && !slices.Contains(early, r.Task) {
+		early = append(early, r.Task)
+	}
+	regs, err := e.register(ctx, early, p, opts.SHA, nil)
 	if err != nil {
-		return nil, err
+		return nil, e.failed(ctx, err, p.Current, regs)
 	}
 	if !opts.SkipGates {
 		if err := e.gates(ctx, opts.SHA); err != nil {
-			return nil, err
+			return nil, e.failed(ctx, err, p.Current, regs)
 		}
 	}
 	if e.Config.Release != nil {
 		if err := e.runRelease(ctx, regs, opts.SHA); err != nil {
-			return nil, err
+			return nil, e.failed(ctx, err, p.Current, regs)
 		}
 	}
 
-	rel := &release.Release{
-		SHA: opts.SHA, Kind: release.Deploy, Revisions: arns(regs), Images: p.Images, At: time.Now().UTC(), By: e.Actor,
+	err = e.rollAndCheck(ctx, arns(regs), opts.SHA)
+	if err == nil {
+		var late map[string]ecsx.Registered
+		late, err = e.register(ctx, without(e.Manifest.Names(), early), p, opts.SHA, nil)
+		maps.Copy(regs, late)
 	}
-	if err := e.rollAndCheck(ctx, rel.Revisions, opts.SHA); err != nil {
+	if err != nil {
 		// A cancelled deploy is left as it is: CI kills the job soon after cancelling it, mid-rollback.
 		if e.Config.OnFailure == "rollback" && !opts.NoRollback && p.Current != nil && ctx.Err() == nil {
 			e.UI.Errorf("deploy of %s failed: %v", short(opts.SHA), err)
 			if rerr := e.restore(ctx, p.Current); rerr != nil {
-				return nil, fmt.Errorf("%w; and the rollback to %s failed too: %v", err, short(p.Current.SHA), rerr)
+				return nil, e.failed(ctx, fmt.Errorf("%w; and the rollback to %s failed too: %v", err, short(p.Current.SHA), rerr), p.Current, regs)
 			}
 			e.UI.Summary("Deploy of `%s` to %s failed and was rolled back to `%s`: %v", short(opts.SHA), e.Stage, short(p.Current.SHA), err)
-			return nil, fmt.Errorf("%w (rolled back to %s)", err, short(p.Current.SHA))
+			err = fmt.Errorf("%w (rolled back to %s)", err, short(p.Current.SHA))
 		}
-		return nil, err
+		return nil, e.failed(ctx, err, p.Current, regs)
+	}
+
+	rel := &release.Release{
+		SHA: opts.SHA, Kind: release.Deploy, Revisions: arns(regs), Images: p.Images, At: time.Now().UTC(), By: e.Actor,
 	}
 	if err := e.Store.Record(ctx, rel); err != nil {
 		return nil, err
@@ -208,6 +261,65 @@ func (e *Env) Deploy(ctx context.Context, opts Options) (*Result, error) {
 	e.UI.Output("version", fmt.Sprint(rel.Version))
 	e.summarize("Deployed", rel)
 	return &Result{Release: rel}, nil
+}
+
+func without(names, drop []string) []string {
+	var out []string
+	for _, n := range names {
+		if !slices.Contains(drop, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// failed puts a copy of the current release's revision on top of every family this deploy registered, and returns err.
+// It outlives a cancelled deploy's context: it's a few quick calls, and skipping it leaves unreleased code where apps
+// find it by family name.
+func (e *Env) failed(ctx context.Context, err error, cur *release.Release, regs map[string]ecsx.Registered) error {
+	var names []string
+	for name, r := range regs {
+		if cur == nil || r.ARN != cur.Revisions[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return err
+	}
+	slices.Sort(names)
+	if cur == nil {
+		e.UI.Warnf("nothing released yet, so the newest revisions of %s stay this failed deploy's", strings.Join(names, ", "))
+		return err
+	}
+	var restorable []string
+	for _, name := range names {
+		if cur.Revisions[name] != "" {
+			restorable = append(restorable, name)
+		} else {
+			e.UI.Warnf("%s: not in the current release, so its newest revision stays this failed deploy's", name)
+		}
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	if _, rerr := e.register(rctx, restorable, &Plan{Holds: map[string]string{}}, cur.SHA, cur.Revisions); rerr != nil {
+		return fmt.Errorf("%w; and putting the released revisions back on top failed: %v", err, rerr)
+	}
+	return err
+}
+
+// pin replaces every image with its digest-pinned reference.
+func (e *Env) pin(ctx context.Context, imgs map[string]string) error {
+	if e.Images == nil {
+		return errors.New("no image resolver")
+	}
+	for _, name := range slices.Sorted(maps.Keys(imgs)) {
+		pinned, err := e.Images.Pin(ctx, imgs[name], e.Config.ImagePolicy.Unpinned)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		imgs[name] = pinned
+	}
+	return nil
 }
 
 func arns(regs map[string]ecsx.Registered) map[string]string {
@@ -250,12 +362,13 @@ func (e *Env) register(ctx context.Context, names []string, p *Plan, sha string,
 	return regs, err
 }
 
-func (e *Env) verifyImages(ctx context.Context, images map[string]string, sha string) error {
-	if e.Config.VerifyImage == "" {
+func (e *Env) verifyImages(ctx context.Context, imgs map[string]string, sha string) error {
+	if e.Config.VerifyImage == config.VerifyNone {
+		e.UI.Warnf("verify_image is none: %s's images are deployed unverified", e.App)
 		return nil
 	}
 	return e.UI.Group("verify images", func() error {
-		for _, img := range distinct(images) {
+		for _, img := range distinct(imgs) {
 			if err := e.shell(ctx, e.Config.VerifyImage, append(e.hookEnv(sha), "ECSD_IMAGE="+img)); err != nil {
 				return fmt.Errorf("verify_image %s: %w", img, err)
 			}
@@ -265,9 +378,9 @@ func (e *Env) verifyImages(ctx context.Context, images map[string]string, sha st
 	})
 }
 
-func distinct(images map[string]string) []string {
+func distinct(imgs map[string]string) []string {
 	var out []string
-	for _, img := range images {
+	for _, img := range imgs {
 		if img != "" && !slices.Contains(out, img) {
 			out = append(out, img)
 		}
@@ -335,7 +448,7 @@ func (e *Env) network(ctx context.Context, name string) (*manifest.Network, erro
 	return nil, errors.New("no network for one-off tasks: set the manifest's network")
 }
 
-// runRelease runs the release task, one at a time per cluster: it waits for any other deploy's, and if one started
+// runRelease runs the release task, one at a time per app: it waits for any other deploy's, and if one started
 // alongside its own, the older one runs and this one stops and waits again. An interrupted deploy stops its task.
 func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, sha string) error {
 	r := e.Config.Release
@@ -353,11 +466,11 @@ func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, s
 	}
 	return e.UI.Group("release: "+r.Task+" "+strings.Join(r.Command, " "), func() error {
 		for attempt := 0; ; attempt++ {
-			if err := e.ECS.WaitNone(ctx, ReleaseStartedBy, r.Wait.Or(30*time.Minute)); err != nil {
+			if err := e.ECS.WaitNone(ctx, ReleaseStartedBy(e.App), r.Wait.Or(30*time.Minute)); err != nil {
 				return fmt.Errorf("release: %w", err)
 			}
 			arn, err := e.ECS.Run(ctx, ecsx.RunInput{
-				Revision: reg.ARN, Container: container, Command: r.Command, StartedBy: ReleaseStartedBy, Network: net,
+				Revision: reg.ARN, Container: container, Command: r.Command, StartedBy: ReleaseStartedBy(e.App), Network: net,
 				LaunchType: e.Manifest.LaunchType, Strategy: e.Manifest.CapacityProviderStrategy,
 				Tags: map[string]string{"ecsd:sha": sha},
 			})
@@ -382,7 +495,7 @@ func (e *Env) runRelease(ctx context.Context, regs map[string]ecsx.Registered, s
 
 // lostRace reports whether another release task started alongside arn, earlier.
 func (e *Env) lostRace(ctx context.Context, arn string) (bool, error) {
-	active, err := e.ECS.Active(ctx, ReleaseStartedBy)
+	active, err := e.ECS.Active(ctx, ReleaseStartedBy(e.App))
 	if err != nil {
 		return false, err
 	}

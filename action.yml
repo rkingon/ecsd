@@ -70,8 +70,12 @@ runs:
         gh release download "$version" --repo "$repo" --dir "$dir" --clobber --pattern "$archive" --pattern checksums.txt
         (cd "$dir" && grep " $archive\$" checksums.txt | shasum -a 256 -c -)
         if [ "$VERIFY" = true ]; then
-          gh attestation verify "$dir/$archive" --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" >/dev/null
-          echo "provenance verified: $archive"
+          # Built from the commit this action is pinned to (or the tag it names), by this repository's release workflow,
+          # on GitHub's runners: a moved tag or a replaced release fails here.
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then source=(--source-digest "$REF"); else source=(--source-ref "refs/tags/$version"); fi
+          gh attestation verify "$dir/$archive" --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" \
+            "${source[@]}" --deny-self-hosted-runners >/dev/null
+          echo "provenance verified: $archive, built from ${source[1]}"
         fi
         tar -xzf "$dir/$archive" -C "$dir" ecsd
         echo "$dir" >> "$GITHUB_PATH"

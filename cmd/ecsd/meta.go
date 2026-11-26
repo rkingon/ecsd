@@ -18,6 +18,7 @@ import (
 	"github.com/rkingon/ecsd/internal/config"
 	"github.com/rkingon/ecsd/internal/ecsx"
 	"github.com/rkingon/ecsd/internal/iampolicy"
+	"github.com/rkingon/ecsd/internal/images"
 	"github.com/rkingon/ecsd/internal/logs"
 	"github.com/rkingon/ecsd/internal/manifest"
 	"github.com/rkingon/ecsd/internal/schema"
@@ -195,6 +196,17 @@ func iamPolicyCmd(a *app) *cobra.Command {
 						in.LogGroups = appendNew(in.LogGroups, src.Group)
 					}
 				}
+			}
+			if r := a.cfg.Release; r != nil {
+				fam, _, _ := a.manifest.Family(r.Task)
+				def, err := c.Describe(ctx, fam.Template)
+				if err != nil {
+					return err
+				}
+				in.ReleaseFamily = aws.ToString(def.Family)
+			}
+			if acct, region, ok := (images.Ref{Host: strings.SplitN(a.manifest.Registry, "/", 2)[0]}).ECR(); ok {
+				in.ECRAccount, in.ECRRegion = acct, region
 			}
 			if operator {
 				return printJSON(iampolicy.Operator(in))

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/rkingon/ecsd/internal/deploy"
 	"github.com/rkingon/ecsd/internal/ecsx"
 	"github.com/rkingon/ecsd/internal/gitx"
+	"github.com/rkingon/ecsd/internal/images"
 	"github.com/rkingon/ecsd/internal/logs"
 	"github.com/rkingon/ecsd/internal/manifest"
 	"github.com/rkingon/ecsd/internal/probe"
@@ -39,6 +41,7 @@ type app struct {
 	manifest *manifest.Manifest
 	ui       *ui.UI
 	interval time.Duration // between polls; tests shorten it
+	pinner   deploy.Pinner // tests replace ECR
 }
 
 type ecsAPI interface {
@@ -171,6 +174,13 @@ func (a *app) env() *deploy.Env {
 		App: a.cfg.App, Stage: a.stage, Config: a.cfg, Manifest: a.manifest,
 		ECS: a.ecsClient(), Store: a.store(), Logs: a.logs, UI: a.ui, Actor: actor(),
 		Probe: &probe.Prober{HTTP: deploy.DefaultHTTP, Log: a.ui.Printf}, HealthInterval: a.interval,
+		Images: a.pinner,
+	}
+	if e.Images == nil {
+		cfg := a.aws
+		e.Images = &images.Resolver{Client: func(region string) images.DescribeImagesAPI {
+			return ecr.NewFromConfig(cfg, func(o *ecr.Options) { o.Region = region })
+		}}
 	}
 	if repo := (gitx.Repo{Dir: a.repo}); repo.Has("HEAD") {
 		e.Git = repo

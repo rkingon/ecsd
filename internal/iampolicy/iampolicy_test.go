@@ -1,6 +1,7 @@
 package iampolicy
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,8 +12,23 @@ func TestDeploy(t *testing.T) {
 		Services: []string{"api"}, Families: []string{"shop-api", "shop-worker"},
 		PassRoles:         []string{"arn:aws:iam::123:role/exec", "arn:aws:iam::123:role/exec"},
 		ManifestParameter: "/shop/prod/deploy", ReleaseParameter: "/shop/prod/release",
+		ReleaseFamily: "shop-api", ECRAccount: "999", ECRRegion: "us-west-2",
 	})
 	j := p.JSON()
+	for _, st := range p.Statement {
+		if slices.Contains(st.Action, "ecs:RegisterTaskDefinition") && slices.Contains(st.Resource, "*") {
+			t.Error("RegisterTaskDefinition on *")
+		}
+		if st.Sid == "ReleaseTask" && (len(st.Resource) != 1 || !strings.HasSuffix(st.Resource[0], "task-definition/shop-api:*")) {
+			t.Errorf("RunTask on %v, want the release task's family only", st.Resource)
+		}
+	}
+	if !strings.Contains(j, `"arn:aws:ecr:us-west-2:999:repository/*"`) {
+		t.Errorf("no ecr:DescribeImages on the registry:\n%s", j)
+	}
+	if strings.Contains(Deploy(Inputs{Partition: "aws", Region: "r", Account: "1", Cluster: "c", ReleaseParameter: "/a"}).JSON(), "ecs:RunTask") {
+		t.Error("RunTask without a release task")
+	}
 	for _, want := range []string{
 		`"arn:aws:ecs:us-east-1:123:service/shop-prod/api"`,
 		`"arn:aws:ecs:us-east-1:123:task-definition/shop-worker:*"`,

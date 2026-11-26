@@ -49,6 +49,7 @@ release: { task: web, command: [migrate] }
 health:
   - { url: "${hosts.web}/healthz", revision: .revision }
 console: { task: console }
+verify_image: none
 `)
 	s.git("init", "-q", "-b", "main")
 	s.commit("one")
@@ -98,6 +99,7 @@ func (s *stage) run(args ...string) (string, error) {
 	s.t.Helper()
 	a := &app{
 		ecs: s.ecs, ssm: s.ssm, logs: s.logs, aws: aws.Config{Region: "us-east-1"}, ui: ui.Discard(), interval: time.Millisecond,
+		pinner: samePinner{},
 	}
 	cmd := rootWith(a)
 	cmd.SetArgs(append([]string{"--stage", "prod", "--repo", s.dir, "--config", filepath.Join(s.dir, "ecsd.yml")}, args...))
@@ -165,7 +167,7 @@ func TestCLI(t *testing.T) {
 
 func TestCLIRejectsUnknownNames(t *testing.T) {
 	s := newStage(t)
-	s.write("ecsd.yml", "app: shop\nimages: {\"*\": x, api: y}\n")
+	s.write("ecsd.yml", "app: shop\nimages: {\"*\": x, api: y}\nverify_image: none\n")
 	if _, err := s.run("plan"); err == nil || !strings.Contains(err.Error(), "images.api") {
 		t.Errorf("err = %v", err)
 	}
@@ -179,3 +181,7 @@ func TestShellJoin(t *testing.T) {
 		t.Errorf("shellJoin = %s", got)
 	}
 }
+
+type samePinner struct{}
+
+func (samePinner) Pin(_ context.Context, image string, _ bool) (string, error) { return image, nil }

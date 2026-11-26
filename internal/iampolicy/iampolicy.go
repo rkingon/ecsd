@@ -18,7 +18,8 @@ type Inputs struct {
 	LogGroups                  []string
 	ManifestParameter          string // empty when the manifest is a file
 	ReleaseParameter           string
-	ConsoleFamily              string
+	ReleaseFamily              string // the release task's; empty without one
+	ECRAccount, ECRRegion      string // the registry's, when it's ECR: tags are resolved there
 }
 
 type Policy struct {
@@ -68,21 +69,31 @@ func Deploy(in Inputs) Policy {
 		services = append(services, in.arn("ecs", "service/"+in.Cluster+"/"+s))
 	}
 	clusterIs := map[string]map[string]any{"ArnEquals": {"ecs:cluster": in.clusterARN()}}
+	tagged := in.families(in.Families)
 	st := []Statement{
 		{Sid: "Read", Effect: "Allow", Resource: []string{"*"}, Action: []string{
-			"ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition", "ecs:DescribeServices", "ecs:DescribeTasks", "ecs:ListTasks",
-			"ecs:ListTagsForResource",
+			"ecs:DescribeTaskDefinition", "ecs:DescribeServices", "ecs:DescribeTasks", "ecs:ListTasks", "ecs:ListTagsForResource",
 		}},
-		{Sid: "TagWhatItCreates", Effect: "Allow", Action: []string{"ecs:TagResource"},
-			Resource:  append(in.families(in.Families), in.tasks()),
-			Condition: map[string]map[string]any{"StringEquals": {"ecs:CreateAction": []string{"RegisterTaskDefinition", "RunTask"}}}},
+		{Sid: "RegisterOwnFamilies", Effect: "Allow", Action: []string{"ecs:RegisterTaskDefinition"}, Resource: in.families(in.Families)},
 		{Sid: "Roll", Effect: "Allow", Action: []string{"ecs:UpdateService"}, Resource: services},
-		{Sid: "ReleaseTask", Effect: "Allow", Action: []string{"ecs:RunTask"}, Resource: in.families(in.Families), Condition: clusterIs},
-		{Sid: "StopOwnReleaseTask", Effect: "Allow", Action: []string{"ecs:StopTask"}, Resource: []string{in.tasks()}, Condition: clusterIs},
 		{Sid: "PassTaskRoles", Effect: "Allow", Action: []string{"iam:PassRole"}, Resource: in.PassRoles,
 			Condition: map[string]map[string]any{"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}}},
 		{Sid: "Releases", Effect: "Allow", Resource: []string{in.parameter(in.ReleaseParameter)},
 			Action: []string{"ssm:GetParameter", "ssm:GetParameterHistory", "ssm:PutParameter"}},
+	}
+	if in.ReleaseFamily != "" {
+		tagged = append(tagged, in.tasks())
+		st = append(st,
+			Statement{Sid: "ReleaseTask", Effect: "Allow", Action: []string{"ecs:RunTask"},
+				Resource: in.families([]string{in.ReleaseFamily}), Condition: clusterIs},
+			Statement{Sid: "StopOwnReleaseTask", Effect: "Allow", Action: []string{"ecs:StopTask"},
+				Resource: []string{in.tasks()}, Condition: clusterIs})
+	}
+	st = append(st, Statement{Sid: "TagWhatItCreates", Effect: "Allow", Action: []string{"ecs:TagResource"}, Resource: tagged,
+		Condition: map[string]map[string]any{"StringEquals": {"ecs:CreateAction": []string{"RegisterTaskDefinition", "RunTask"}}}})
+	if in.ECRAccount != "" {
+		st = append(st, Statement{Sid: "PinImages", Effect: "Allow", Action: []string{"ecr:DescribeImages"},
+			Resource: []string{fmt.Sprintf("arn:%s:ecr:%s:%s:repository/*", in.Partition, in.ECRRegion, in.ECRAccount)}})
 	}
 	if in.ManifestParameter != "" {
 		st = append(st, Statement{Sid: "Manifest", Effect: "Allow", Action: []string{"ssm:GetParameter"},

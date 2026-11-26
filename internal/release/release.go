@@ -116,20 +116,32 @@ func decode(v string, version int64) (*Release, error) {
 	return &r, nil
 }
 
-// RollbackTarget is the newest release that isn't current's commit and wasn't itself rolled back from.
+// RolledBackFrom is the rollback away from sha, when nothing has released sha since: a commit that shouldn't ship
+// again without someone deciding it should. history is newest first.
+func RolledBackFrom(history []Release, sha string) (*Release, bool) {
+	for i := range history {
+		r := &history[i]
+		if r.SHA == sha {
+			return nil, false
+		}
+		if r.Kind == Rollback && r.From == sha {
+			return r, true
+		}
+	}
+	return nil, false
+}
+
+// RollbackTarget is the newest release that isn't current's commit and wasn't rolled back from since.
 func RollbackTarget(history []Release, current *Release) (*Release, error) {
 	if current == nil {
 		return nil, errors.New("nothing released yet")
 	}
-	bad := map[string]bool{}
-	for _, r := range history {
-		if r.Kind == Rollback && r.From != "" {
-			bad[r.From] = true
-		}
-	}
 	for i := range history {
 		r := &history[i]
-		if r.SHA != current.SHA && !bad[r.SHA] {
+		if r.SHA == current.SHA {
+			continue
+		}
+		if _, bad := RolledBackFrom(history[:i], r.SHA); !bad {
 			return r, nil
 		}
 	}

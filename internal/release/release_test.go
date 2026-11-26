@@ -45,6 +45,25 @@ func TestRollbackTarget(t *testing.T) {
 	}
 }
 
+func TestRolledBackFrom(t *testing.T) {
+	history := []Release{
+		{SHA: "a", Kind: Rollback, From: "b", Version: 3},
+		{SHA: "b", Kind: Deploy, Version: 2},
+		{SHA: "a", Kind: Deploy, Version: 1},
+	}
+	if r, bad := RolledBackFrom(history, "b"); !bad || r.Version != 3 {
+		t.Errorf("RolledBackFrom(b) = %+v, %v", r, bad)
+	}
+	if _, bad := RolledBackFrom(history, "a"); bad {
+		t.Error("a was never rolled back from")
+	}
+	// b released again (forced) after the rollback: no longer refused.
+	again := append([]Release{{SHA: "b", Kind: Deploy, Version: 4}}, history...)
+	if _, bad := RolledBackFrom(again, "b"); bad {
+		t.Error("b, released again, still counts as rolled back from")
+	}
+}
+
 func TestFind(t *testing.T) {
 	history := []Release{{SHA: "abcdef123", Version: 9}, {SHA: "0123456789", Version: 8}}
 	if r, err := Find(history, "0123456"); err != nil || r.Version != 8 {

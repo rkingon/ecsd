@@ -8,12 +8,25 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 )
 
-var version = "dev" // set at release
+var version = "" // set by release builds
+
+// buildVersion is the release's version, else the module version go install recorded.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return strings.TrimPrefix(bi.Main.Version, "v")
+	}
+	return "dev"
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -40,7 +53,7 @@ func rootWith(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ecsd",
 		Short:         "Deploy to ECS: register, release, roll, verify, record, roll back",
-		Version:       version,
+		Version:       buildVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

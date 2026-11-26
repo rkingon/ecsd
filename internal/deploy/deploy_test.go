@@ -55,6 +55,18 @@ type world struct {
 	cfg   *config.File
 	hooks []string
 	sick  string // a commit whose health check reports another
+	pins  fakePinner
+}
+
+// fakePinner leaves images as they are, or pins them to a made-up digest when digests is set.
+type fakePinner struct{ digests bool }
+
+func (f *fakePinner) Pin(_ context.Context, image string, _ bool) (string, error) {
+	if !f.digests {
+		return image, nil
+	}
+	repo, _, _ := strings.Cut(image, ":")
+	return repo + "@sha256:" + strings.Repeat("d", 64), nil
 }
 
 const configYAML = `
@@ -109,6 +121,7 @@ func newWorld(t *testing.T, yml string) *world {
 		Store:          &release.Store{API: w.ssm, Parameter: "/shop/prod/release"},
 		Git:            fakeGit{order: []string{c1, c2, c3}},
 		Probe:          &probe.Prober{HTTP: srv.Client(), Log: t.Logf},
+		Images:         &w.pins,
 		UI:             ui.Discard(),
 		HealthInterval: time.Millisecond,
 		Shell: func(_ context.Context, command string, env []string) error {
@@ -158,7 +171,7 @@ func TestDeploy(t *testing.T) {
 	if img := w.ecs.Image(rel.Revisions["worker"]); img != "reg.example/shop-worker:"+c1 {
 		t.Errorf("worker image = %s", img)
 	}
-	releases := w.ecs.TasksStartedBy(ReleaseStartedBy)
+	releases := w.ecs.TasksStartedBy(ReleaseStartedBy("shop"))
 	if len(releases) != 1 || !slices.Equal(releases[0].Overrides.ContainerOverrides[0].Command, []string{"migrate"}) {
 		t.Errorf("release tasks: %+v", releases)
 	}
@@ -258,7 +271,7 @@ func TestFailedReleaseTaskStopsBeforeRolling(t *testing.T) {
 
 func TestReleaseWaitsForAnotherDeploys(t *testing.T) {
 	w := newWorld(t, configYAML)
-	other := w.ecs.StartTask("shop-api", ReleaseStartedBy, 3)
+	other := w.ecs.StartTask("shop-api", ReleaseStartedBy("shop"), 3)
 	w.mustDeploy(c1)
 	if s := aws.ToString(w.ecs.Task(other).StoppedReason); strings.Contains(s, "ecsd") {
 		t.Errorf("stopped the other deploy's release task: %s", s)
@@ -272,10 +285,10 @@ func TestReleaseLosesRaceToOlderTask(t *testing.T) {
 	other := w.ecs.StartTask("shop-api", "pending", 2)
 	orig := w.env.ECS.API
 	w.env.ECS.API = &hookECS{API: orig, onRun: func() {
-		w.ecs.Retag(other, ReleaseStartedBy)
+		w.ecs.Retag(other, ReleaseStartedBy("shop"))
 	}}
 	w.mustDeploy(c1)
-	tasks := w.ecs.TasksStartedBy(ReleaseStartedBy)
+	tasks := w.ecs.TasksStartedBy(ReleaseStartedBy("shop"))
 	stopped := 0
 	for _, task := range tasks {
 		if strings.Contains(aws.ToString(task.StoppedReason), "started first") {
@@ -295,7 +308,7 @@ func TestInterruptedReleaseStopsItsTask(t *testing.T) {
 	if _, err := w.env.Deploy(ctx, Options{SHA: c1}); err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("err = %v", err)
 	}
-	tasks := w.ecs.TasksStartedBy(ReleaseStartedBy)
+	tasks := w.ecs.TasksStartedBy(ReleaseStartedBy("shop"))
 	if len(tasks) != 1 || aws.ToString(tasks[0].LastStatus) != "STOPPED" {
 		t.Errorf("release task left running: %+v", tasks)
 	}
@@ -346,14 +359,14 @@ func TestRollback(t *testing.T) {
 		t.Errorf("rollback release = %+v", rel)
 	}
 	for _, svc := range []string{"api", "web"} {
-		if got := w.ecs.Revision(svc); got != first.Revisions[svc] {
-			t.Errorf("%s on %s, want %s", svc, got, first.Revisions[svc])
+		if got, want := w.ecs.Image(w.ecs.Revision(svc)), w.ecs.Image(first.Revisions[svc]); got != want {
+			t.Errorf("%s runs %s, want %s", svc, got, want)
 		}
 	}
 	if img := w.ecs.Image(rel.Revisions["worker"]); img != "reg.example/shop-worker:"+c1 {
 		t.Errorf("worker's newest revision runs %s", img)
 	}
-	if n := len(w.ecs.TasksStartedBy(ReleaseStartedBy)); n != 2 {
+	if n := len(w.ecs.TasksStartedBy(ReleaseStartedBy("shop"))); n != 2 {
 		t.Errorf("rollback ran a release task: %d in all", n)
 	}
 	// c2 was rolled back from, and c1 is current: nowhere left to go.
@@ -373,4 +386,105 @@ type hookECS struct {
 func (h *hookECS) RunTask(ctx context.Context, in *ecs.RunTaskInput, opts ...func(*ecs.Options)) (*ecs.RunTaskOutput, error) {
 	h.onRun()
 	return h.API.RunTask(ctx, in, opts...)
+}
+
+func TestFailedReleaseTaskRestoresFamilies(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	w.ecs.ExitCodes["shop-api"] = 1
+	if _, err := w.deploy(c2); err == nil {
+		t.Fatal("deploy with a failing release task succeeded")
+	}
+	for _, family := range []string{"shop-api", "shop-web", "shop-worker"} {
+		if got := w.ecs.LatestImage(family); !strings.HasSuffix(got, ":"+c1) {
+			t.Errorf("%s's newest revision runs %s, not the released %s", family, got, c1[:7])
+		}
+	}
+}
+
+func TestTaskFamiliesWaitForChecks(t *testing.T) {
+	w := newWorld(t, configYAML+"on_failure: rollback\n")
+	w.mustDeploy(c1)
+	w.sick = c2
+	registered := w.ecs.Count("RegisterTaskDefinition")
+	if _, err := w.deploy(c2); err == nil {
+		t.Fatal("deploy with failing health checks succeeded")
+	}
+	for _, family := range []string{"shop-api", "shop-web", "shop-worker"} {
+		if got := w.ecs.LatestImage(family); !strings.HasSuffix(got, ":"+c1) {
+			t.Errorf("%s's newest revision runs %s after the rollback", family, got)
+		}
+	}
+	// api and web for c2, then copies of c1's on top; worker never.
+	if n := w.ecs.Count("RegisterTaskDefinition") - registered; n != 4 {
+		t.Errorf("registered %d revisions, want 4", n)
+	}
+}
+
+func TestRolledBackCommitIsRefused(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	w.mustDeploy(c2)
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.deploy(c2); err == nil || !strings.Contains(err.Error(), "rolled back from") {
+		t.Errorf("redeploy of a rolled-back commit: %v", err)
+	}
+	if res, err := w.env.Deploy(context.Background(), Options{SHA: c2, Force: true}); err != nil || res.Release == nil {
+		t.Errorf("forced redeploy = %+v, %v", res, err)
+	}
+	// Released again, so no longer refused: a rerun is just "already released".
+	if res, err := w.deploy(c2); err != nil || !strings.Contains(res.Skipped, "already released") {
+		t.Errorf("rerun after the forced redeploy = %+v, %v", res, err)
+	}
+}
+
+func TestRollbackPutsReleasedRevisionsOnTop(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.mustDeploy(c1)
+	w.mustDeploy(c2)
+	if _, err := w.env.Rollback(context.Background(), RollbackOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range []string{"shop-api", "shop-web", "shop-worker"} {
+		if got := w.ecs.LatestImage(family); !strings.HasSuffix(got, ":"+c1) {
+			t.Errorf("%s's newest revision runs %s after rolling back to %s", family, got, c1[:7])
+		}
+	}
+}
+
+func TestImagePolicy(t *testing.T) {
+	w := newWorld(t, strings.Replace(configYAML, "${registry}/shop-${name}", "elsewhere.example/shop-${name}", 1))
+	if _, err := w.deploy(c1); err == nil || !strings.Contains(err.Error(), "isn't in the manifest's registry") {
+		t.Errorf("foreign image: %v", err)
+	}
+	w = newWorld(t, strings.Replace(configYAML, "${registry}/shop-${name}", "elsewhere.example/shop-${name}", 1)+"image_policy: {any_registry: true}\n")
+	w.mustDeploy(c1)
+
+	w = newWorld(t, configYAML)
+	w.env.Manifest.Registry = ""
+	if _, err := w.env.Plan(context.Background(), Options{SHA: c1, Images: map[string]string{"api": "x/y:1", "web": "x/y:1", "worker": "x/y:1"}}); err == nil {
+		t.Error("a manifest without a registry passed")
+	}
+}
+
+func TestImagesArePinned(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.pins.digests = true
+	rel := w.mustDeploy(c1)
+	want := "reg.example/shop-api@sha256:" + strings.Repeat("d", 64)
+	if rel.Images["api"] != want || w.ecs.Image(rel.Revisions["api"]) != want {
+		t.Errorf("api: recorded %s, registered %s; want %s", rel.Images["api"], w.ecs.Image(rel.Revisions["api"]), want)
+	}
+	if !strings.Contains(w.hooks[0], "ECSD_IMAGE="+want) {
+		t.Errorf("verify_image saw %s", w.hooks[0])
+	}
+}
+
+func TestOtherAppsReleaseTasksDontBlock(t *testing.T) {
+	w := newWorld(t, configYAML)
+	w.env.Config.Release.Wait = config.Duration{Duration: 10 * time.Millisecond}
+	w.ecs.StartTask("other-api", ReleaseStartedBy("other"), -1)
+	w.mustDeploy(c1)
 }

@@ -19,12 +19,13 @@ type File struct {
 	Images            map[string]Image `yaml:"images" json:"images" jsonschema_description:"Image per service or task name, or * for all. Variables: ${registry} ${name} ${sha} ${app} ${stage}."`
 	SkipUnlessChanged []string         `yaml:"skip_unless_changed,omitempty" json:"skip_unless_changed,omitempty" jsonschema_description:"Gitignore-style patterns over the files changed since the released commit; a deploy with no matching change does nothing. !pattern excludes."`
 	BeforeRoll        []Gate           `yaml:"before_roll,omitempty" json:"before_roll,omitempty" jsonschema_description:"Gates run after registering and before the release command and rollout, in order."`
-	Release           *Release         `yaml:"release,omitempty" json:"release,omitempty" jsonschema_description:"A one-off task run before the rollout, one at a time per cluster: migrations."`
+	Release           *Release         `yaml:"release,omitempty" json:"release,omitempty" jsonschema_description:"A one-off task run before the rollout, one at a time per app: migrations."`
 	Health            []Health         `yaml:"health,omitempty" json:"health,omitempty" jsonschema_description:"Endpoints that must answer, and report the deployed commit, once every service has rolled."`
 	Smoke             []Check          `yaml:"smoke,omitempty" json:"smoke,omitempty" jsonschema_description:"Requests that must get the expected answer before a deploy is recorded as a release."`
 	OnFailure         string           `yaml:"on_failure,omitempty" json:"on_failure,omitempty" jsonschema:"enum=stop,enum=rollback,default=stop" jsonschema_description:"rollback: a failed rollout, health check or smoke test returns the services to the current release."`
 	Console           *Console         `yaml:"console,omitempty" json:"console,omitempty" jsonschema_description:"The one-off task ecsd console starts."`
-	VerifyImage       string           `yaml:"verify_image,omitempty" json:"verify_image,omitempty" jsonschema_description:"A shell command run for every image before it's deployed or rolled back to, with ECSD_IMAGE set. Non-zero stops the deploy."`
+	VerifyImage       string           `yaml:"verify_image" json:"verify_image" jsonschema_description:"Required. A shell command run for every image before it's deployed or rolled back to, with ECSD_IMAGE set (pinned to its digest); non-zero stops the deploy. none deploys images unverified, and says so on every deploy."`
+	ImagePolicy       ImagePolicy      `yaml:"image_policy,omitempty" json:"image_policy,omitempty" jsonschema_description:"Opt-outs from the image rules: every image is in the manifest's registry, and pinned to a digest (ECR tags are resolved)."`
 	Timeouts          Timeouts         `yaml:"timeouts,omitempty" json:"timeouts,omitempty"`
 }
 
@@ -96,6 +97,14 @@ type Console struct {
 	Container string   `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
+type ImagePolicy struct {
+	AnyRegistry bool `yaml:"any_registry,omitempty" json:"any_registry,omitempty" jsonschema_description:"Images may come from outside the manifest's registry."`
+	Unpinned    bool `yaml:"unpinned,omitempty" json:"unpinned,omitempty" jsonschema_description:"Images outside ECR may be deployed by tag. ECR tags are always resolved to digests."`
+}
+
+// VerifyNone is verify_image's explicit opt-out.
+const VerifyNone = "none"
+
 type Timeouts struct {
 	Roll Duration `yaml:"roll,omitempty" json:"roll,omitempty" jsonschema_description:"Per service, until its deployment completes and its old tasks are gone. Default 20m."`
 }
@@ -160,6 +169,9 @@ func (f *File) Validate() error {
 		if img.Ref == "" {
 			errs = append(errs, fmt.Errorf("images.%s: empty", name))
 		}
+	}
+	if f.VerifyImage == "" {
+		errs = append(errs, errors.New("verify_image: required: a command that checks $ECSD_IMAGE (gh attestation verify, cosign verify), or none"))
 	}
 	switch f.OnFailure {
 	case "", "stop", "rollback":

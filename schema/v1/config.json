@@ -106,7 +106,7 @@
       "required": [
         "task"
       ],
-      "description": "A one-off task run before the rollout, one at a time per cluster: migrations."
+      "description": "A one-off task run before the rollout, one at a time per app: migrations."
     },
     "health": {
       "items": {
@@ -216,7 +216,22 @@
     },
     "verify_image": {
       "type": "string",
-      "description": "A shell command run for every image before it's deployed or rolled back to, with ECSD_IMAGE set. Non-zero stops the deploy."
+      "description": "Required. A shell command run for every image before it's deployed or rolled back to, with ECSD_IMAGE set (pinned to its digest); non-zero stops the deploy. none deploys images unverified, and says so on every deploy."
+    },
+    "image_policy": {
+      "properties": {
+        "any_registry": {
+          "type": "boolean",
+          "description": "Images may come from outside the manifest's registry."
+        },
+        "unpinned": {
+          "type": "boolean",
+          "description": "Images outside ECR may be deployed by tag. ECR tags are always resolved to digests."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Opt-outs from the image rules: every image is in the manifest's registry, and pinned to a digest (ECR tags are resolved)."
     },
     "timeouts": {
       "properties": {
@@ -234,7 +249,8 @@
   "type": "object",
   "required": [
     "app",
-    "images"
+    "images",
+    "verify_image"
   ],
   "title": "ecsd.yml",
   "description": "What ecsd deploys: images, gates, the release task, health and smoke checks."

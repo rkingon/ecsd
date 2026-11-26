@@ -153,6 +153,14 @@ func (e *ECS) Image(revision string) string {
 	return aws.ToString(e.defs[revision].ContainerDefinitions[0].Image)
 }
 
+// LatestImage is the first container's image in the family's newest revision: what an app starting the family by
+// name runs.
+func (e *ECS) LatestImage(family string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return aws.ToString(e.defs[e.resolve(family)].ContainerDefinitions[0].Image)
+}
+
 // Tags of a registered revision.
 func (e *ECS) Tags(revision string) map[string]string {
 	e.mu.Lock()
